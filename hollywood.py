@@ -37,9 +37,11 @@ class E2Estimator:
     get_values_from_list(X, flat_list=False)
         Gets the relevant values for inference from a dataset in interaction list
         form or flat list form
-    fit(G, list_flag=False, flat_list=False, degree_flag=False)
+    fit(G, list_flag=False, list_flag=False, flat_list=False, degree_flag=False)
         Fits the Hollywood model to G. flat_list and degree_flag determine the 
-        form of G
+        form of G. If list_flag = True, and flat_list=False, degree_flag=False, 
+        then G should be in the form [[r11, r12, r13], [r21, r22], ...]. This 
+        should be the primary use case.
     """
 
     def __init__(self, max_iter=20, finite_pop=False, alpha_zero=False):
@@ -66,7 +68,7 @@ class E2Estimator:
         self.N_k = pd.Series(dict(zip(N_k, N_k_vals)))
         self.node_degrees_dict = dict(zip(nodes, node_degrees))
 
-    def fit(self, G, list_flag=False, flat_list=False, degree_flag=False):
+    def fit(self, G, list_flag=True, flat_list=False, degree_flag=False):
         #For now, just assume its a pandas df with To and From
 
         if list_flag:
