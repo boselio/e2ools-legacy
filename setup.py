@@ -19,7 +19,7 @@ extensions = [
 ]
 
 setup(
-    name = "edge-exchangeable-networks",
+    name = "e2ools",
     version = "0.0.1",
     author = "Brandon Oselio",
     author_email = "boselio@umich.edu",
