@@ -9,8 +9,6 @@ import scipy.stats as st
 import pickle
 from copy import deepcopy
 from bisect import bisect_right, bisect_left
-sns.set()
-
 
 
 class TemporalProbabilities:

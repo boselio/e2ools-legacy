@@ -11,8 +11,8 @@ from scipy.special import gamma
 import seaborn as sns
 import powerlaw as pl
 import functools
-from .choice_fns import get_agent, get_agent2
-
+from ..choice_fns import get_agent, get_agent2
+from .utils import HollywoodBaseNetwork
 
 class HollywoodNetwork(HollywoodBaseNetwork):
 
