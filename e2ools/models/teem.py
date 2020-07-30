@@ -9,6 +9,7 @@ import scipy.stats as st
 import pickle
 from copy import deepcopy
 from bisect import bisect_right, bisect_left
+import os
 
 
 class TemporalProbabilities():
@@ -271,3 +272,66 @@ def run_chain(save_dir, num_times, created_times, created_sticks, change_times, 
     return
 
 
+def get_limits_and_means(gibbs_dir, times, num_chains, num_iters_per_chain, 
+    stick_name='stick_avgs.pkl', prob_name='prob_avgs.pkl'):
+
+    save_dirs = [os.path.join(gibbs_dir, '{}'.format(i)) for i in range(num_chains)]
+    tp_master_list = []
+    for save_dir in save_dirs:
+        for i in range(int(num_iters_per_chain / 2)):
+            save_path = os.path.join(save_dir, '{}.pkl'.format(i))
+            with open(save_path, 'rb') as infile:
+                tp_master_list.append(pickle.load(infile))
+
+    num_times = len(times)
+    num_recs = len(tp_master_list[0].arrival_times_dict)
+    means = np.zeros((num_times, num_recs))
+    medians = np.zeros((num_times, num_recs))
+    upper_limits = np.zeros((num_times, num_recs))
+    lower_limits = np.zeros((num_times, num_recs))
+    for r in range(num_recs):
+        if r % 10 == 0:
+            print(r)
+        stick_list = []
+        for tp in tp_master_list:
+            sticks_ind = np.digitize(times, tp.arrival_times_dict[r], right=True) - 1
+            #sticks_ind[sticks_ind == len(tp.stick_dict[r])] = len(tp.stick_dict[r]) - 1
+            sticks = np.array(tp.stick_dict[r])[sticks_ind]
+            sticks[times < tp.created_times[r]] = 0
+            stick_list.append(sticks)
+        stick_array = np.array(stick_list)
+
+        upper_limits[:, r] = np.percentile(stick_array, 97.5, axis=0)
+        lower_limits[:, r] = np.percentile(stick_array, 2.5, axis=0)
+        means[:, r] = stick_array.mean(axis=0)
+        medians[:, r] = np.median(stick_array, axis=0)
+
+
+    with open(os.path.join(gibbs_dir, stick_name), 'wb') as outfile:
+        pickle.dump({'means': means,
+                     'upper_limits': upper_limits,
+                     'lower_limits': lower_limits,
+                     'medians': medians}, outfile)
+
+
+    probs = np.ones((means.shape[0], means.shape[1] + 1))
+    probs[:, :-1] = means
+    probs[:, 1:] = probs[:, 1:] * (np.cumprod(1 - means, axis=1))
+
+
+    probs_ll = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
+    probs_ul = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
+
+    probs_ll[:, :-1] = lower_limits
+    probs_ll[:, 1:] = probs_ll[:, 1:] * (np.cumprod(1 - upper_limits, axis=1))
+
+    probs_ul[:, :-1] = upper_limits
+    probs_ul[:, 1:] = probs_ul[:, 1:] * (np.cumprod(1 - lower_limits, axis=1))
+
+    with open(os.path.join(gibbs_dir, prob_name), 'wb') as outfile:
+        pickle.dump({'means': probs,
+                    'upper_limits': probs_ul,
+                    'lower_limits': probs_ll,
+                    'medians': medians}, outfile)
+
+    return (upper_limits, lower_limits, means), (probs_ul, probs_ll, probs)
