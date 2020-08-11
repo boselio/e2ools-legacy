@@ -10,6 +10,10 @@ import pickle
 from copy import deepcopy
 from bisect import bisect_right, bisect_left
 import os
+from functools import partial
+import pathlib
+import time
+from concurrent.futures import ProcessPoolExecutor
 
 
 class TemporalProbabilities():
@@ -269,6 +273,53 @@ def run_chain(save_dir, num_times, created_times, created_sticks, change_times, 
             file_dir = save_dir / '{}.pkl'.format(t - int(num_times / 2))
             with file_dir.open('wb') as outfile:
                 pickle.dump(tp_initial, outfile)
+    return
+
+
+def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters_per_chain=500):
+    print('Creating Necessary Parameters')
+    created_times = get_created_times(interactions)
+    created_sticks = get_created_sticks(interactions, theta, alpha)
+
+    max_time = interactions[-1][0]
+
+    change_times = [np.random.exponential(1 / nu)]
+    while True:
+        itime = np.random.exponential(1 / nu)
+        if change_times[-1] + itime > max_time:
+            break
+        else:
+            change_times.append(change_times[-1] + itime)
+
+    rc_func = partial(run_chain, num_times=num_iters_per_chain, created_times=created_times,
+                  created_sticks=created_sticks, change_times=change_times,
+                  interactions=interactions, alpha=alpha, theta=theta)
+
+    if not Path(save_dir).isdir():
+        Path(save_dir).mkdir(parents=True)
+
+    with (Path(save_dir) / 'change_times.pkl').open('wb') as outfile:
+        pickle.dump(change_times, outfile)
+        
+    save_dirs = [pathlib.Path(save_dir) / '{}'.format(i) 
+                 for i in range(num_chains)]
+
+    start_time = time.time()
+    print('Beginning Inference:')
+    tp_lists = []
+
+    with ProcessPoolExecutor() as executor:
+        for _ in executor.map(rc_func, save_dirs):
+            continue
+    end_time = time.time()
+
+    print('Took {} minutes.'.format((end_time - start_time) / 60))
+    with open('/Users/boselio/temp/stationary_test/change_times.pkl', 'wb') as outfile:
+        pickle.dump(change_times, outfile)
+
+    ((upper_limits, lower_limits, means),
+    (probs_ul, probs_ll, probs)) = teem.get_limits_and_means(save_dir, change_times, num_chains, num_iters_per_chain)
+
     return
 
 
