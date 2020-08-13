@@ -295,14 +295,18 @@ def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters
                   created_sticks=created_sticks, change_times=change_times,
                   interactions=interactions, alpha=alpha, theta=theta)
 
-    if not Path(save_dir).isdir():
-        Path(save_dir).mkdir(parents=True)
+    if not pathlib.Path(save_dir).is_dir():
+        pathlib.Path(save_dir).mkdir(parents=True)
 
-    with (Path(save_dir) / 'change_times.pkl').open('wb') as outfile:
+    with (pathlib.Path(save_dir) / 'change_times.pkl').open('wb') as outfile:
         pickle.dump(change_times, outfile)
         
     save_dirs = [pathlib.Path(save_dir) / '{}'.format(i) 
                  for i in range(num_chains)]
+
+    for sd in save_dirs:
+        if not sd.is_dir():
+            sd.mkdir(parents=True)
 
     start_time = time.time()
     print('Beginning Inference:')
@@ -314,11 +318,15 @@ def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters
     end_time = time.time()
 
     print('Took {} minutes.'.format((end_time - start_time) / 60))
-    with open('/Users/boselio/temp/stationary_test/change_times.pkl', 'wb') as outfile:
-        pickle.dump(change_times, outfile)
+
+    print('Calculating posterior estimates:')
+    start_time = time.time()
 
     ((upper_limits, lower_limits, means),
-    (probs_ul, probs_ll, probs)) = teem.get_limits_and_means(save_dir, change_times, num_chains, num_iters_per_chain)
+    (probs_ul, probs_ll, probs)) = get_limits_and_means(save_dir, change_times, num_chains, num_iters_per_chain)
+    end_time = time.time()
+
+    print('Took {} minutes.'.format((end_time - start_time) / 60))
 
     return
 
@@ -386,3 +394,23 @@ def get_limits_and_means(gibbs_dir, times, num_chains, num_iters_per_chain,
                     'medians': medians}, outfile)
 
     return (upper_limits, lower_limits, means), (probs_ul, probs_ll, probs)
+
+
+def rename_data_in_order(data):
+    nodes_in_appearance = []
+    renaming_dict = {}
+    new_data = []
+    
+    for interaction in data:
+        try:
+            new_interaction = [renaming_dict[i] for i in interaction]
+        except KeyError:
+            new_interaction = []
+            for i in interaction[1]:
+                if i not in renaming_dict.keys():
+                    renaming_dict[i] = len(nodes_in_appearance)
+                    nodes_in_appearance.append(i)   
+                new_interaction.append(renaming_dict[i])
+        new_data.append([interaction[0], new_interaction])
+    
+    return nodes_in_appearance, renaming_dict, new_data

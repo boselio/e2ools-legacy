@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pickle
 import scipy.optimize as opt
+from collections import defaultdict
+
 
 class DDCRPEstimator():
     def __init__(self, decay):
@@ -21,16 +23,21 @@ class DDCRPEstimator():
                 dists = self.f(interaction[0] - np.array(node_times))
                 scores.append(sum(dists))
 
-                if r > max_receiver:
+                if r >= max_receiver:
                     max_receiver += 1
 
                 node_times.append(interaction[0])
 
-        self.theta = opt.fsolve(self._f_theta, theta_init, args=(scores, max_receiver))
+
+        self.theta = opt.fsolve(self._f_theta, theta_init, args=(scores, max_receiver))[0]
+
+        if self.theta > 1e10:
+            print('Max theta was reached, setting to 1e-9.')
+            self.theta = 1e-9
 
 
     def _f_theta(self, theta, scores, max_receiver):
-        val = np.sum(-2 / (np.array(scores) + theta))
+        val = np.sum(-1 / (np.array(scores) + theta))
         val += max_receiver / theta
         return val
 
@@ -72,3 +79,36 @@ def evaluate_probabilities(f, theta, data, times, debug=False):
     return p_list
 
 
+def evaluate_log_likelihood(data, f, theta):
+    
+    times = []
+    labels = []
+    for t, interaction in data:
+        for v in interaction:
+            times.append(t)
+            labels.append(v)
+        
+    log_likelihood = 0
+    times = np.array(times)
+    labels = np.array(labels, dtype="int")
+    
+    for t, interaction in data:
+        
+        distances = t - times
+        discounts = f(distances)
+        discounted_degrees = defaultdict(float)
+        
+        for v, d in zip(labels, discounts):
+            discounted_degrees[v] += d
+        total_degrees = sum([v for v in discounted_degrees.values()])
+        existing_nodes = set([v for v, k in discounted_degrees.items() if k > 0])
+
+        for v in interaction:
+            import pdb
+            #pdb.set_trace()
+            if v in existing_nodes:
+                log_likelihood += np.log(discounted_degrees[v] / (total_degrees + theta))
+            else:
+                log_likelihood += np.log(theta / (total_degrees + theta))
+                
+    return log_likelihood
