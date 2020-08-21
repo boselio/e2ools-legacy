@@ -14,7 +14,7 @@ import scipy.stats as stats
 import pickle
 import os.path
 from copy import deepcopy
-from .choice_fns import choice_discrete_unnormalized
+from ..choice_fns import choice_discrete_unnormalized
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set()

@@ -1,5 +1,5 @@
 import numpy as np
-from .temporal_e2_infer import TemporalProbabilities
+from ..models.teem import TemporalProbabilities
 
 def save_interactions(interactions, file_name):
 

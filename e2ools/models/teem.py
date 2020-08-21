@@ -1,4 +1,4 @@
-from scipy.special import logit, logsumexp, expit, beta
+from scipy.special import logit, logsumexp, expit, beta, betaln
 import numpy as np
 from collections import defaultdict, Counter
 import bisect
@@ -256,8 +256,63 @@ def get_created_times(interactions):
     return np.array(created_times)
 
 
+def sample_alpha(alpha, theta, V_array, r_array, sigma=0.1, debug=False):
+
+    #Transform alpha by logit
+    t_alpha = logit(alpha)
+    t_alpha_prime = t_alpha + np.random.randn() * sigma
+    alpha_prime = expit(t_alpha_prime)
+    
+    #Calculate the log likelihood ratio
+    ll_ratio = ((alpha - alpha_prime) * np.log(V_array) + (r_array + 1) * 
+                (alpha_prime - alpha) * np.log(1 - V_array)).sum()
+    
+    ll_ratio += betaln(1 - alpha, theta + r_array * alpha).sum()
+    ll_ratio -= betaln(1 - alpha_prime, theta + r_array * alpha_prime).sum()
+
+    #Correct for the transformation
+    ll_ratio += np.log(alpha_prime * (1 - alpha_prime))
+    ll_ratio -= np.log(alpha * (1 - alpha))
+
+    if debug:
+        print('Proposal: {}, ll_ratio: {}'.format(alpha_prime, ll_ratio))
+
+    if np.isnan(ll_ratio):
+        print('Uh oh! log likelihood ratio is NaN.')
+        with open('debug.dat', 'a') as outfile:
+            outfile.write('V_array: {}\n'.format(' '.join([i for i in V_array])))
+            outfile.write('r_array: {}\n'.format(' '.join([i for i in r_array])))
+        return False, alpha
+
+    if np.log(np.random.rand()) < ll_ratio:
+        return True, alpha_prime
+    
+    else:
+        return False, alpha
+
+
+def sample_theta(alpha, theta, V_array, r_array, sigma=50, debug=False):
+    theta_prime = theta + np.random.randn() * sigma
+    
+    if theta_prime < 0:
+        return False, theta
+    
+    #Calculate the log likelihood ratio
+    ll_ratio = ((theta_prime - theta) * np.log(1 - V_array)).sum()
+    
+    ll_ratio += betaln(1 - alpha, theta + r_array * alpha).sum()
+    ll_ratio -= betaln(1 - alpha, theta_prime + r_array * alpha).sum()
+    if debug:
+        print('Proposal: {}, ll_ratio: {}'.format(theta_prime, ll_ratio))
+    if np.log(np.random.rand()) < ll_ratio:
+        return True, theta_prime
+    
+    else:
+        return False, theta
+
+
 def run_chain(save_dir, num_times, created_times, created_sticks, change_times, interactions, alpha,
-              theta, seed=None):
+              theta, update_alpha=False, update_theta=False, seed=None):
     np.random.seed(seed)
 
     tp_initial = TemporalProbabilities(-1 * np.ones_like(change_times), -1 * np.ones_like(change_times),
@@ -269,14 +324,35 @@ def run_chain(save_dir, num_times, created_times, created_sticks, change_times, 
             print(t)
         tp_initial, rec_choice, stick_choice = update_sticks_v2(tp_initial, change_times, rec_choice,
                                                                     interactions, alpha, theta)
+
+        if update_alpha or update_theta:
+            #Calculate V_array and r_array
+            V_array = []
+            r_array = []
+            for k, v in tp_initial.stick_dict.items():
+                for s in v:
+                    V_array.append(s)
+                    r_array.append(k)
+            V_array = np.array(V_array)
+            r_array = np.array(r_array)
+
+        if update_alpha:
+            accepted, alpha = sample_alpha(alpha, theta, V_array, r_array)
+
+        if update_theta:
+            accepted, theta = sample_theta(alpha, theta, V_array, r_array)
+
+        params = {'alpha': alpha, 'theta': theta}
+
         if t >= num_times / 2:
             file_dir = save_dir / '{}.pkl'.format(t - int(num_times / 2))
             with file_dir.open('wb') as outfile:
-                pickle.dump(tp_initial, outfile)
+                pickle.dump([tp_initial, params], outfile)
     return
 
 
-def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters_per_chain=500):
+def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters_per_chain=500, 
+                update_alpha=False, update_theta=False):
     print('Creating Necessary Parameters')
     created_times = get_created_times(interactions)
     created_sticks = get_created_sticks(interactions, theta, alpha)
@@ -291,9 +367,12 @@ def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters
         else:
             change_times.append(change_times[-1] + itime)
 
+    print('Number of change times: {}'.format(len(change_times)))
+
     rc_func = partial(run_chain, num_times=num_iters_per_chain, created_times=created_times,
                   created_sticks=created_sticks, change_times=change_times,
-                  interactions=interactions, alpha=alpha, theta=theta)
+                  interactions=interactions, alpha=alpha, theta=theta, update_alpha=update_alpha,
+                  update_theta=update_theta)
 
     if not pathlib.Path(save_dir).is_dir():
         pathlib.Path(save_dir).mkdir(parents=True)
@@ -340,7 +419,8 @@ def get_limits_and_means(gibbs_dir, times, num_chains, num_iters_per_chain,
         for i in range(int(num_iters_per_chain / 2)):
             save_path = os.path.join(save_dir, '{}.pkl'.format(i))
             with open(save_path, 'rb') as infile:
-                tp_master_list.append(pickle.load(infile))
+                tp_list, params = pickle.load(infile)
+                tp_master_list.append(tp_list)
 
     num_times = len(times)
     num_recs = len(tp_master_list[0].arrival_times_dict)
@@ -349,7 +429,7 @@ def get_limits_and_means(gibbs_dir, times, num_chains, num_iters_per_chain,
     upper_limits = np.zeros((num_times, num_recs))
     lower_limits = np.zeros((num_times, num_recs))
     for r in range(num_recs):
-        if r % 10 == 0:
+        if r % 100 == 0:
             print(r)
         stick_list = []
         for tp in tp_master_list:
@@ -394,6 +474,20 @@ def get_limits_and_means(gibbs_dir, times, num_chains, num_iters_per_chain,
                     'medians': medians}, outfile)
 
     return (upper_limits, lower_limits, means), (probs_ul, probs_ll, probs)
+
+
+def get_posterior_alphas(gibbs_dir, num_chains, num_iters_per_chain):
+
+    save_dirs = [os.path.join(gibbs_dir, '{}'.format(i)) for i in range(num_chains)]
+    alphas = []
+    for save_dir in save_dirs:
+        for i in range(int(num_iters_per_chain / 2)):
+            save_path = os.path.join(save_dir, '{}.pkl'.format(i))
+            with open(save_path, 'rb') as infile:
+                tp_list, params = pickle.load(infile)
+                alphas.append(params['alpha'])
+
+    return alphas
 
 
 def rename_data_in_order(data):

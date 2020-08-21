@@ -35,6 +35,11 @@ class DDCRPEstimator():
             print('Max theta was reached, setting to 1e-9.')
             self.theta = 1e-9
 
+        if self.theta < 0:
+            print('Negative theta was acheived, setting to 1e-9.')
+            self.theta = 1e-9
+
+
 
     def _f_theta(self, theta, scores, max_receiver):
         val = np.sum(-1 / (np.array(scores) + theta))
@@ -74,6 +79,13 @@ def evaluate_probabilities(f, theta, data, times, debug=False):
         degrees = degrees[degrees > 0]
 
         probs = np.concatenate([degrees, [theta]])
+        if debug:
+            try:
+                assert np.all(probs >= 0)
+            except AssertionError:
+                import pdb 
+                pdb.set_trace()
+
         p_list.append(probs / probs.sum())
 
     return p_list
