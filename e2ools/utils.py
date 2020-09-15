@@ -10,23 +10,24 @@ from copy import deepcopy
 from scipy.special import logit
 import matplotlib.backends.backend_pdf
 import math
+from .models import teem
 
-
-def plot_event_times(interactions, r, ax):
+def plot_event_times(interactions, r, ax, color='C2'):
     r_interactions = [[t, len([rec for rec in recs if rec == r])] for [t, recs] in interactions]
 
     x = []
     y = []
     for t, num_times in r_interactions:
-        y.append(np.arange(num_times) * 0.02)
+        y.append(np.arange(num_times) * 0.005)
         x.append(np.ones(num_times) * t)
     x = np.concatenate(x)
     y = np.concatenate(y)
-    ax.plot(x, y, 'o', color='C2', markersize=4, alpha=0.5, label='data')
+    ax.plot(x, y, 'o', color=color, markersize=4, alpha=0.5, label='data')
     return ax
 
 
 def plot_teem_debug_plots(interactions, true_probs, means, upper_limits, lower_limits, change_times,
+                    true_params=None, gibbs_dir=None, num_chains=None, num_iters_per_chain=None,
                     save_dir='debug.pdf', r_list='all'):
 
     sns.set()
@@ -41,7 +42,7 @@ def plot_teem_debug_plots(interactions, true_probs, means, upper_limits, lower_l
         number_of_plots = int(r_list[3:])
         r_list = unique_nodes[np.argsort(degrees)[::-1][:number_of_plots]]
 
-    num_pages = math.ceil(len(r_list) / 10)
+    num_pages = math.ceil((len(r_list) + 2)/ 10)
 
     r_counter = 0
 
@@ -89,6 +90,32 @@ def plot_teem_debug_plots(interactions, true_probs, means, upper_limits, lower_l
                 r_counter += 1
                 if r_counter == len(r_list):
                     break
+
+            if p == num_pages-1:
+                if true_params is not None:
+                    page_counter = r_counter % 10
+                    if 'alpha' in true_params:
+                        i, j = np.unravel_index(page_counter, [5, 2])
+                        alphas = teem.get_posterior_alphas(gibbs_dir, num_chains, num_iters_per_chain)
+                        ax[i,j].plot(alphas, color=posterior_color, label='Posterior estimates')
+                        x = [0, len(alphas)]
+                        y = [true_params['alpha'], true_params['alpha']]
+
+                        ax[i, j].plot(x, y, color='k', label='True alpha = {}'.format(true_params['alpha']))
+                        ax[i, j].legend()
+                        ax[i, j].set_title('Alpha Trace Plot')
+                        page_counter += 1
+                        
+                    if 'theta' in true_params:
+                        i, j = np.unravel_index(page_counter, [5, 2])
+                        thetas = teem.get_posterior_thetas(gibbs_dir, num_chains, num_iters_per_chain)
+                        ax[i,j].plot(thetas, color=posterior_color, label='Posterior estimates')
+                        x = [0, len(thetas)]
+                        y = [true_params['theta'], true_params['theta']]
+
+                        ax[i, j].plot(x, y, color='k', label='True theta = {}'.format(true_params['theta']))
+                        ax[i, j].legend()
+                        ax[i, j].set_title('Theta Trace Plot')
 
             fig.tight_layout()
             pdf.savefig(fig)
