@@ -1016,6 +1016,9 @@ def get_limits_and_means(gibbs_dir, times, num_chains, num_iters_per_chain,
     probs[:, :-1] = means
     probs[:, 1:] = probs[:, 1:] * (np.cumprod(1 - means, axis=1))
 
+    prob_medians = np.ones((medians.shape[0], medians.shape[1] + 1))
+    prob_medians[:, :-1] = medians
+    prob_medians[:, 1:] = prob_medians[:, 1:] * (np.cumprod(1 - medians, axis=1))
 
     probs_ll = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
     probs_ul = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
@@ -1030,7 +1033,7 @@ def get_limits_and_means(gibbs_dir, times, num_chains, num_iters_per_chain,
         pickle.dump({'means': probs,
                     'upper_limits': probs_ul,
                     'lower_limits': probs_ll,
-                    'medians': medians}, outfile)
+                    'medians': prob_medians}, outfile)
 
     return (upper_limits, lower_limits, means), (probs_ul, probs_ll, probs)
 
