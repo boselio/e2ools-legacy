@@ -32,9 +32,13 @@ class TemporalProbabilities():
             self.stick_dict[r].append(s)
 
     def get_receiver_stick_trace(self, r, upper_limit):
-        x = np.repeat(self.arrival_times_dict[r], 2)[1:]
+        x = np.array(self.arrival_times_dict[r])
+        y = np.array(self.stick_dict[r])
+        y = y[x <= upper_limit]
+        x = x[x <= upper_limit]
+        x = np.repeat(x, 2)[1:]
+        y = np.repeat(y, 2)
         x = np.concatenate([x, [upper_limit]])
-        y = np.repeat(self.stick_dict[r], 2)
 
         return x, y
 
