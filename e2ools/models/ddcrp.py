@@ -59,7 +59,7 @@ def exp_decay(d, sigma=0.01):
 
 
 def evaluate_probabilities(f, theta, data, times, debug=False):
-    node_times = np.array([interaction[0] for interaction in data])
+    node_times = np.array([interaction[0] for interaction in data for _ in interaction[1]])
     node_labels = np.array([i for interaction in data for i in interaction[1]])
     node_set = set(node_labels)
 
