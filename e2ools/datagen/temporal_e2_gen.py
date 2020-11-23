@@ -167,8 +167,20 @@ def create_temporal_e2_data(alpha=0.1, theta=10, num_interactions=1000, delta=10
 def create_temporal_e2_data_v2(alpha=0.1, theta=10, num_interactions=1000, delta=10, nu=1, num_recs_per_interaction=None):
 
     if num_recs_per_interaction is None:
-        def num_recs_per_interaction():
-            yield np.random.randint(10)
+        def random_gen():
+            while True:
+                yield np.random.randint(1,11)
+        num_recs_per_interaction = random_gen()
+        
+    else:
+        try:
+            num_recs = int(num_recs_per_interaction)
+            def single_int(num):
+                while True:
+                    yield num
+            num_recs_per_interaction = single_int(num_recs)
+        except TypeError:
+            continue
 
     # Find the interaction times
     interaction_interarrival_times = np.random.exponential(1.0 / delta, size=num_interactions)
@@ -220,7 +232,7 @@ def create_temporal_e2_data_v2(alpha=0.1, theta=10, num_interactions=1000, delta
         else:
             interaction = [interaction_times[interaction_ind], []]
 
-            for _ in range(next(num_recs_per_interaction())):
+            for _ in range(next(num_recs_per_interaction)):
                 receiver = np.random.choice(num_receivers + 1, p=current_probabilities)
                 if receiver == num_receivers:
                     created_times.append(interaction_times[interaction_ind])
