@@ -171,16 +171,17 @@ def create_temporal_e2_data_v2(alpha=0.1, theta=10, num_interactions=1000, delta
             while True:
                 yield np.random.randint(1,11)
         num_recs_per_interaction = random_gen()
-        
+
     else:
         try:
+            #Test if it is a integer
             num_recs = int(num_recs_per_interaction)
             def single_int(num):
                 while True:
                     yield num
             num_recs_per_interaction = single_int(num_recs)
         except TypeError:
-            continue
+            print('Expectation is that num_recs_per_interaction is a generator.')
 
     # Find the interaction times
     interaction_interarrival_times = np.random.exponential(1.0 / delta, size=num_interactions)
