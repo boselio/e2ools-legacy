@@ -27,7 +27,7 @@ def plot_event_times(interactions, r, ax, color='C2'):
 
 
 def plot_teem_debug_plots(interactions, true_probs, means, upper_limits, lower_limits, change_times,
-                    true_params=None, gibbs_dir=None, num_chains=None, num_iters_per_chain=None,
+                    plot_events=False, true_params=None, gibbs_dir=None, num_chains=None, num_iters_per_chain=None,
                     save_dir='debug.pdf', r_list='all'):
 
     sns.set()
@@ -85,7 +85,9 @@ def plot_teem_debug_plots(interactions, true_probs, means, upper_limits, lower_l
                     ax[i, j].legend()
                 
                 
-                _ = plot_event_times(interactions, r, ax[i, j])
+                if plot_events:
+                    _ = plot_event_times(interactions, r, ax[i, j])
+                    
                 ax[i, j].set_title('Receiver {}'.format(r))
                 r_counter += 1
                 if r_counter == len(r_list):
