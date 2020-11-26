@@ -220,7 +220,7 @@ def draw_beta(interactions, tp, begin_time, alpha, theta, r):
     if r not in degree_dict:
         degree_dict[r] = 0
     if begin_time == tp.created_times[r]:
-                degree_dict[r] -= 1
+        degree_dict[r] -= 1
 
     a = 1 - alpha + degree_dict[r]
     b = theta + (r + 1) * alpha + np.sum([v for (k, v) in degree_dict.items() if k > r])
@@ -788,20 +788,22 @@ def run_chain(save_dir, num_times, created_times, created_sticks, change_times, 
 
 
 def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters_per_chain=500, 
-                update_alpha=False, update_theta=False, update_interarrival_times=False):
+                update_alpha=True, update_theta=True, change_times=None, 
+                update_interarrival_times=True):
     print('Creating Necessary Parameters')
     created_times = get_created_times(interactions)
     created_sticks = get_created_sticks(interactions, theta, alpha)
 
     max_time = interactions[-1][0]
 
-    change_times = [np.random.exponential(1 / nu)]
-    while True:
-        itime = np.random.exponential(1 / nu)
-        if change_times[-1] + itime > max_time:
-            break
-        else:
-            change_times.append(change_times[-1] + itime)
+    if change_times is None:
+        change_times = [np.random.exponential(1 / nu)]
+        while True:
+            itime = np.random.exponential(1 / nu)
+            if change_times[-1] + itime > max_time:
+                break
+            else:
+                change_times.append(change_times[-1] + itime)
 
     print('Number of change times: {}'.format(len(change_times)))
 
