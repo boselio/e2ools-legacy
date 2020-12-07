@@ -1227,7 +1227,11 @@ def get_limits_and_means(gibbs_dir, times, num_chains, num_iters_per_chain,
             print(r)
         stick_list = []
         for tp in tp_master_list:
-            sticks_ind = np.digitize(times, tp.arrival_times_dict[r], right=False) - 1
+            try:
+                sticks_ind = np.digitize(times, tp.arrival_times_dict[r], right=False) - 1
+            except ValueError:
+                import pdb
+                pdb.set_trace()
             #sticks_ind[sticks_ind == len(tp.stick_dict[r])] = len(tp.stick_dict[r]) - 1
             sticks = np.array(tp.stick_dict[r])[sticks_ind]
             sticks[times < tp.created_times[r]] = 0
