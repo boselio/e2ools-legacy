@@ -212,6 +212,46 @@ class TemporalProbabilities():
         return
 
 
+class FastInteractions():
+    #Purpose of class is to wrap interactions so that they can be accessed via slicing 
+    #and unique receiver counting very quickly.
+    def __init__(self, interactions):
+        self.interaction_times = np.array([interaction[0] for interaction in interactions])
+
+        index_list = []
+        flattened_interactions = []
+        repeated_index_list = []
+        counter = 0
+        for i, interaction in enumerate(interactions):
+            index_list.append(counter)
+            flattened_interactions.extend(interaction[1])
+            repeated_index_list.extend([counter] * len(interaction[1]))
+            counter += len(interaction[1])
+
+        #Add one more to index list, in the case that a time is greater than 
+        #any of the interaction times (see get_degrees).
+        index_list.append(counter)
+
+        self.index_array = np.array(index_list)
+        self.flattened_interactions = np.array(flattened_interactions)
+
+        self.created_times = {}
+        for r in np.unique(self.flattened_interactions):
+            self.created_times[r] = repeated_index_list[np.argmax(flattened_interactions == r)]
+
+
+    def get_degrees(self, begin_time, end_time):
+        #Get degrees much quicker than a list comprehension could.
+        begin_i = np.searchsorted(self.interaction_times, begin_time, side='left')
+        end_i = np.searchsorted(self.interaction_times, end_time, side='right')
+
+        begin_ind = self.index_array[begin_i]
+        end_ind = self.index_array[end_i]
+        recs, degrees = np.unique(self.flattened_interactions[begin_ind:end_ind],
+                                    return_counts=True)
+        return recs, degrees
+
+
 def draw_beta(interactions, tp, begin_time, alpha, theta, r):
     recs, degrees = np.unique([r for interaction in interactions for r in interaction[1]],
                               return_counts=True)
@@ -222,8 +262,29 @@ def draw_beta(interactions, tp, begin_time, alpha, theta, r):
     if begin_time == tp.created_times[r]:
         degree_dict[r] -= 1
 
+
     a = 1 - alpha + degree_dict[r]
     b = theta + (r + 1) * alpha + np.sum([v for (k, v) in degree_dict.items() if k > r])
+
+    return np.random.beta(a, b)
+
+
+def draw_beta_speedy(interactions, begin_time, end_time, alpha, theta, r):
+    recs, degrees = interactions.get_degrees(begin_time, end_time)
+
+    degree_dict = dict(zip(recs, degrees))
+
+    if r not in recs:
+        r_degrees = degrees[recs == r]
+    else:
+        r_degrees = 0 
+
+    if begin_time == interactions.created_times[r]:
+        r_degrees -= 1
+
+    a = 1 - alpha + r_degrees
+    sum_ind = np.argmax(recs > r)
+    b = theta + (r + 1) * alpha + np.sum(degrees[sum_ind:])
 
     return np.random.beta(a, b)
 
@@ -252,12 +313,7 @@ def update_sticks_v2(tp_initial, interactions, alpha, theta):
     max_time = interactions[-1][0]
     #created_set = set()
 
-    permuted_inds = np.random.permutation(len(change_times))
     for ind in permuted_inds:
-
-        #if ind == 0:
-        #    import pdb
-        #    pdb.set_trace()
 
         ct = change_times[ind]
 
@@ -282,6 +338,178 @@ def update_sticks_v2(tp_initial, interactions, alpha, theta):
 
             change_index = tp_initial.arrival_times_dict[new_choice].index(ct)
             tp_initial.stick_dict[new_choice][change_index] = new_stick
+
+        else:
+            r_delete = int(recs_initial[ind])
+            tp_initial.delete_change(r_delete, ct)
+        
+            if r_delete != -1:
+                # redraw the beta that we had deleted.
+                begin_time, change_ind = tp_initial.get_last_switch(r_delete, ct, return_index=True)
+                end_time = tp_initial.get_next_switch(r_delete, ct)
+                if end_time == -1:
+                    end_time = max_time
+
+                begin_ind = bisect_left(interaction_times, begin_time)
+                end_ind = bisect_right(interaction_times, end_time)
+
+                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, begin_time, alpha, theta, r_delete)
+
+                tp_initial.stick_dict[r_delete][change_ind] = new_stick
+
+            if new_choice == num_created_recs:
+                rec_choice[ind] = -1
+                stick_choice[ind] = -1
+                tp_initial.insert_change(-1, ct, -1.0)
+
+            else:
+                # Draw the beta backward
+                begin_time, change_ind = tp_initial.get_last_switch(new_choice, ct, return_index=True)
+                begin_ind = bisect_left(interaction_times, begin_time)
+                end_ind = bisect_right(interaction_times, ct)
+                
+                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, begin_time, alpha, theta, new_choice)
+
+                tp_initial.stick_dict[new_choice][change_ind] = new_stick
+
+                #Draw the beta forward
+                end_time = tp_initial.get_next_switch(new_choice, ct)
+                if end_time == -1:
+                    end_time = max_time
+                begin_ind = bisect_left(interaction_times, ct)
+                end_ind = bisect_right(interaction_times, end_time)
+
+                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, ct, alpha, theta, new_choice)
+
+                tp_initial.insert_change(new_choice, ct, new_stick)
+
+    # Reupdate all the initial sticks, in case they did not get updated.
+    for r in range(num_recs):
+            #draw beta
+        end_time = tp_initial.get_next_switch(r, tp_initial.created_times[r])
+        if end_time == -1:
+            end_time = max_time
+
+        begin_ind = bisect_left(interaction_times, tp_initial.created_times[r])
+        end_ind = bisect_right(interaction_times, end_time)
+
+        new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, tp_initial.created_times[r], alpha, theta, r)
+
+        tp_initial.stick_dict[r][0] = new_stick
+
+    return tp_initial, rec_choice, stick_choice
+
+
+def update_sticks_new_jump_update(tp_initial, interactions, alpha, theta):
+
+    num_recs = len(set([r for t, recs in interactions for r in recs]))
+    recs_initial, change_times = zip(*[(r, t) for (r, v) in tp_initial.arrival_times_dict.items() 
+                                        for t in v[1:]])
+    change_times = list(change_times)
+    recs_initial = list(recs_initial)
+
+
+    if len(tp_initial.arrival_times_dict[-1]) > 0:
+        change_times.append(tp_initial.arrival_times_dict[-1][0])
+        recs_initial.append(-1)
+
+    change_times = np.array(change_times)
+    sorted_inds = change_times.argsort()
+    change_times = change_times[sorted_inds]
+    recs_initial = np.array(recs_initial)[sorted_inds]
+
+    rec_choice = np.zeros_like(change_times)
+    stick_choice = np.zeros_like(change_times)
+    interaction_times = np.array([interaction[0] for interaction in interactions])
+    max_time = interactions[-1][0]
+    #created_set = set()
+
+    permuted_inds = np.random.permutation(len(change_times))
+    
+    # calculate all degrees between change times for all receivers
+    degree_mat = np.zeros((num_recs, len(change_times) + 1))
+    beta_mat = np.zeros((num_recs, len(change_times) + 1))
+
+    for i, (begin_time, end_time) in enumerate(zip(np.concatenate([[0], change_times]), np.concatenate([change_times, [interaction_times[-1] + 1]]))):
+
+        begin_ind = bisect_left(interaction_times, begin_time)
+        end_ind = bisect_right(interaction_times, end_time)
+        if begin_ind == end_ind:
+            continue
+            
+        recs, degrees = np.unique([r for interaction in interactions[begin_ind:end_ind] for r in interaction[1]],
+                              return_counts=True)
+
+        for r in recs:
+            if begin_time >= tp_initial.created_times[r] and end_time <= tp_initial.created_times[r]:
+                degrees[recs == r] -= 1
+
+        try:
+            degree_mat[recs, i] = degrees
+        except IndexError:
+            import pdb
+            pdb.set_trace()
+
+        for r in range(num_recs):
+            beta_mat[r, i] = tp_initial.get_stick(r, end_time)
+
+    s_mat = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mat), axis=0))[1:, :], 
+           np.zeros((1, len(change_times)+1))])
+
+    for ind in permuted_inds:
+    #Need to calculate, the likelihood of each stick if that receiver
+    #was not chosen.
+
+        ct = change_times[ind]
+        try:
+            end_time = change_times[ind+1]
+        except: end_time = interaction_times[-1] + 1
+
+        for r in range(num_recs):
+            beta_mat[r, ind+1] = tp_initial.get_stick(r, end_time)
+
+        num_created_recs = len(tp_initial.created_times[tp_initial.created_times < ct])
+        probs = np.array([tp_initial.get_stick(r, ct) for r in range(num_created_recs)] + [1])
+        probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
+
+        log_probs = np.log(probs)
+        #Calculate likelihood of each jump
+        #First step, add integrated new beta
+        log_probs[:-1] += betaln(1 - alpha + degree_mat[:num_created_recs, ind+1], 
+                            theta + np.arange(1, num_created_recs+1) * alpha + s_mat[:num_created_recs, ind+1])
+        
+        #I think this next line is wrong.
+        #log_probs[-1] += betaln(1 - alpha, 
+        #                    theta + num_created_recs+1 * alpha)
+
+        #Now, need to add all other likelihood components, i.e. all degrees for
+        #which the receiver did not jump.
+        likelihood_components = degree_mat[:num_created_recs, ind+1] * np.log(beta_mat[:num_created_recs, ind+1])
+        likelihood_components += s_mat[:num_created_recs, ind+1] * np.log(1 - beta_mat[:num_created_recs, ind+1])
+
+        log_probs[:-1] += np.sum(likelihood_components) - likelihood_components
+        log_probs[-1] += np.sum(likelihood_components)
+
+        probs = np.exp(log_probs - logsumexp(log_probs))
+
+        new_choice = np.random.choice(num_created_recs+1, p=probs)
+        rec_choice[ind] = new_choice
+        if new_choice == recs_initial[ind]:
+            if new_choice == num_created_recs:
+                #Do nothing, it stayed in the tail
+                continue
+            else:
+                #Draw the beta
+                end_time = tp_initial.get_next_switch(new_choice, ct)
+                if end_time == -1:
+                    end_time = max_time
+                begin_ind = bisect_left(interaction_times, ct)
+                end_ind = bisect_right(interaction_times, end_time)
+
+                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, ct, alpha, theta, new_choice)
+
+                change_index = tp_initial.arrival_times_dict[new_choice].index(ct)
+                tp_initial.stick_dict[new_choice][change_index] = new_stick
 
         else:
             r_delete = int(recs_initial[ind])
@@ -743,18 +971,32 @@ def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, si
     return temporal_probs, accepted, log_acceptance_probs
 
 
-def run_chain(save_dir, num_times, created_times, created_sticks, change_times, interactions, alpha,
-              theta, nu, update_alpha=False,
+def run_chain(save_dir, num_times, created_times, created_sticks, 
+                interactions, alpha, theta, nu, update_alpha=False, change_times=None,
               update_theta=False, update_interarrival_times=False, sigma_it=1, seed=None):
     np.random.seed(seed)
 
+    max_time = interactions[-1][0]
+
+    if change_times is None:
+        change_times = [np.random.exponential(1 / nu)]
+        while True:
+            itime = np.random.exponential(1 / nu)
+            if change_times[-1] + itime > max_time:
+                break
+            else:
+                change_times.append(change_times[-1] + itime)
+
+    print('Number of change times: {}'.format(len(change_times)))
+    
     tp_initial = TemporalProbabilities(-1 * np.ones_like(change_times), -1 * np.ones_like(change_times),
                                          created_times, created_sticks, change_times)
 
     for t in range(num_times):
         if t % 100 == 0:
             print(t)
-        tp_initial, rec_choice, stick_choice = update_sticks_v2(tp_initial, interactions, alpha, theta)
+        #tp_initial, rec_choice, stick_choice = update_sticks_v2(tp_initial, interactions, alpha, theta)
+        tp_initial, rec_choice, stick_choice = update_sticks_new_jump_update(tp_initial, interactions, alpha, theta)
 
         if update_interarrival_times:
             tp_initial, accepted, log_acceptance_probs = sample_interarrival_times(tp_initial,
@@ -793,19 +1035,6 @@ def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters
     print('Creating Necessary Parameters')
     created_times = get_created_times(interactions)
     created_sticks = get_created_sticks(interactions, theta, alpha)
-
-    max_time = interactions[-1][0]
-
-    if change_times is None:
-        change_times = [np.random.exponential(1 / nu)]
-        while True:
-            itime = np.random.exponential(1 / nu)
-            if change_times[-1] + itime > max_time:
-                break
-            else:
-                change_times.append(change_times[-1] + itime)
-
-    print('Number of change times: {}'.format(len(change_times)))
 
     rc_func = partial(run_chain, num_times=num_iters_per_chain, created_times=created_times,
                   created_sticks=created_sticks, change_times=change_times,
