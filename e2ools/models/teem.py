@@ -313,6 +313,8 @@ def update_sticks_v2(tp_initial, interactions, alpha, theta):
     max_time = interactions[-1][0]
     #created_set = set()
 
+    permuted_inds = np.random.permutation(len(change_times))
+
     for ind in permuted_inds:
 
         ct = change_times[ind]

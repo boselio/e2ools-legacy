@@ -6,7 +6,8 @@ def num_generator(i):
         yield i
 
         
-def pitman_yor_sticks(alpha, theta, num_interactions=1000, num_nodes_per_interaction=None, initial_sticks=None):
+def pitman_yor_sticks(alpha, theta, num_interactions=1000, 
+                        num_nodes_per_interaction=None, initial_sticks=None):
     if initial_sticks is None:
         sticks = np.array([])
     else:
