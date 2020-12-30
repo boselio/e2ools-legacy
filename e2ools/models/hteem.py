@@ -1,4 +1,5 @@
 import numpy as np
+import dill as pickle
 
 from sklearn.base import BaseEstimator
 from sklearn.utils import check_array
@@ -13,59 +14,53 @@ from functools import partial
 import scipy
 import scipy.sparse as sps
 import scipy.stats as stats
-import pickle
+#import pickle
 import os.path
 from copy import deepcopy
-from .choice_fns import choice_discrete_unnormalized
+from ..choice_fns import choice_discrete_unnormalized
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set()
-from .generators import SharedHollywoodNetwork, NewmanClausetPower
+
 from concurrent.futures import ProcessPoolExecutor
 
 
-class HVCM():
-    def __init__(self, holdout=100, alpha_hyperparams=(5, 5),
-                 theta_hyperparams=(10, 10), lower_alpha_hyperparams=(5,5),
-                 lower_theta_hyperparams=(10,10), hier_priors=False):
+class HTEEM(): 
+    def __init__(self, save_dir, nu, alpha=None, theta=None, theta_s=None, 
+                    num_chains=4, num_iters_per_chain=500, 
+                    holdout=100, alpha_hyperparams=(5, 5),
+                    theta_hyperparams=(10, 10), lower_alpha_hyperparams=(5,5),
+                    lower_theta_hyperparams=(10,10)):
 
-        if hier_priors:
-            raise NotImplementedError('Hierarchical priors are broken. Please come again.')
         self.alpha_hyperparams = alpha_hyperparams
         self.theta_hyperparams = theta_hyperparams
-        self.lower_alpha_hyperparams = lower_alpha_hyperparams
         self.lower_theta_hyperparams = lower_theta_hyperparams
 
+        self.alpha = alpha
+        self.theta = theta
+        self.theta_s = theta_s
+
+        
 
     def initialize_state(self, interactions, save_dir):
 
         #Initialize state variables
-        #Number of customers in each restaurant
-        self.num_customers_in_s = defaultdict(int)
-
         ####Don't think I need this
         #Number of total tables across franchise serving each dish
         self.global_table_counts = defaultdict(int)
         ####
 
-        #Number of total tables in the franchise
-        self.global_num_tables = 0
         #Number of tables in each restaurant
         self.num_tables_in_s = defaultdict(int)
         #configuration: top level key is s (the restaurant),
         #lower level key is r (type of dish),
         #lowest level value is list of tables with # of customers.
-        self.receiver_inds = defaultdict(lambda: np.array([-1]))
-        self.table_counts = defaultdict(list)
-        self.sticks = defaultdict(lambda: np.array())
-        self.probs = defaultdict(lambda: [1])
-        self.num_type_tables = 0
+        self.receiver_inds = defaultdict(lambda: defaultdict(lambda: np.array([-1], dtype='int')))
+        self.table_counts = defaultdict(lambda: np.array([]))
+        self.sticks = defaultdict(lambda: np.array([]))
+        self.probs = defaultdict(lambda: np.array([1]))
 
-        self.store_alphas = []
-        self.store_thetas = []
-        #Initialize alpha and theta.
-        self.alpha = np.random.beta(*self.alpha_hyperparams)
-        self.theta = np.random.gamma(*self.theta_hyperparams)
+        self.global_sticks = np.array([])
 
         #Sender set
         self.s_set = set([interaction[1] for interaction in interactions])
@@ -75,101 +70,71 @@ class HVCM():
         self.r_set = set([r for interaction in interactions for r in interaction[2]])
         self.r_size = len(self.r_set)
 
-        if len(self.lower_theta_hyperparams) != self.s_size:
-            self.lower_theta_hyperparams = dict(zip(self.s_set, [self.lower_theta_hyperparams] * self.s_size))
+        if self.alpha is None:
+            self.alpha = np.random.beta(*self.alpha_hyperparams)
 
-        if len(self.lower_alpha_hyperparams) != self.s_size:
-            self.lower_alpha_hyperparams = dict(zip(self.s_set, [self.lower_alpha_hyperparams] * self.s_size))
+        if self.theta is None: 
+            self.theta = np.random.gamma(*self.theta_hyperparams)
 
-        self.alpha_s = {}
-        self.theta_s = {}
-        for s in self.s_set:
-            self.alpha_s[s] = np.random.beta(*self.lower_alpha_hyperparams[s])
-            self.theta_s[s] = np.random.gamma(*self.lower_theta_hyperparams[s])
+        if self.theta_s is None:
+            if len(self.lower_theta_hyperparams) != self.s_size:
+                self.lower_theta_hyperparams = dict(zip(self.s_set, 
+                                [self.lower_theta_hyperparams] * self.s_size))
 
-        #Priors for alphas and thetas
-        #alphas = np.random.beta(self.phi_alpha * self.alpha, self.phi_alpha * (1 - self.alpha), size=len(self.s_set))
-        #thetas = np.random.gamma(1/self.phi_theta * self.theta, self.phi_theta, size=len(self.s_set))
-
-        #self.alpha_s = dict(zip(self.s_set, alphas))
-        #self.theta_s = dict(zip(self.s_set, thetas))
-
-        self.running_mean_theta_s = defaultdict(float)
-        self.running_mean_alpha_s = defaultdict(float)
-
+            self.theta_s = {s: np.random.gamma(*self.lower_theta_hyperparams[s]) 
+                                                            for s in self.s_set}
+        else:
+            try: 
+                len(self.theta_s)
+            except TypeError:
+                self.theta_s = {s: self.theta_s for s in self.s_set}
 
         self._sample_table_configuration(interactions, initial=True)
 
-        with open(os.path.join(save_dir, 'model_info.pkl'), 'wb') as outfile:
-            pickle.dump({'alpha_hyperparams': self.alpha_hyperparams,
-                            'theta_hyperparams': self.theta_hyperparams,
-                            'theta_s_hyperparams': self.lower_theta_hyperparams,
-                            'alpha_s_hyperparams': self.lower_alpha_hyperparams},
-                        outfile)
 
-        file_name = os.path.join(save_dir, 'params_{}.pkl'.format(0))
-        with open(file_name, 'wb') as outfile:
+    def run_chain(self, save_dir, num_times, interactions, sample_parameters=True):
 
-            pickle.dump({'global_counts': self.global_table_counts,
-                            'theta': self.theta,
-                            'alpha': self.alpha,
-                            'alpha_s': self.alpha_s,
-                            'theta_s': self.theta_s
-                            },
-                        outfile)
+        self.initialize_state(interactions, save_dir)
 
-        self.store_alphas.append(self.alpha)
-        self.store_thetas.append(self.theta)
+        s_time = time.time()
+        for t in range(num_times):
+            if t % 100 == 0:
+                print(t)
 
-        for s in self.s_set:
-            self.running_mean_theta_s[s] += self.theta_s[s]
-            self.running_mean_alpha_s[s] += self.alpha_s[s]
-
-
-    def fit(self, interactions, initialize=True,
-            iters=100, phi_theta=1, phi_alpha=2, save_dir='./'):
-
-        if initialize:
-            self.initialize_state(interactions, save_dir)
-
-        for iteration in range(1, iters):
-            s_time = time.time()
-
-            print(iteration)
+            #Need to delete when starting to work with time
             random.shuffle(interactions)
-            self._sample_parameters()
+
+            if sample_parameters:
+                self._sample_parameters()
+
             self._sample_table_configuration(interactions)
 
-            file_name = os.path.join(save_dir, 'params_{}.pkl'.format(iteration))
-            with open(file_name, 'wb') as outfile:
+            params = {'alpha': self.alpha, 'theta': self.theta,
+                        'theta_s': self.theta_s,
+                        'global_counts': self.global_table_counts,
+                        'sticks': self.sticks,
+                        'receiver_inds': self.receiver_inds,
+                        'global_sticks': self.global_sticks}
 
-                pickle.dump({'global_counts': self.global_table_counts,
-                             'theta': self.theta,
-                             'alpha': self.alpha,
-                             'alpha_s': self.alpha_s,
-                             'theta_s': self.theta_s
-                             },
-                            outfile)
 
-            self.store_alphas.append(self.alpha)
-            self.store_thetas.append(self.theta)
+            if t >= num_times / 2:
+                file_dir = save_dir / '{}.pkl'.format(t - int(num_times / 2))
+                with file_dir.open('wb') as outfile:
+                    pickle.dump(params, outfile)
 
-            for s in self.s_set:
-                self.running_mean_theta_s[s] += self.theta_s[s]
-                self.running_mean_alpha_s[s] += self.alpha_s[s]
-
-            e_time = time.time()
-            print(e_time - s_time)
+        e_time = time.time()
+        print(e_time - s_time)
 
 
     def _sample_table_configuration(self, interactions, initial=False):
+
         if initial:
-            for s, r_list in interactions:
-                for r in r_list:
+            for t, s, interaction in interactions:
+                for r in interaction:
                     self._add_customer(s, r)
 
         else:
-            for s, interaction in interactions:
+            for t, s, interaction in interactions:
                 for r in interaction:
                     #Remove a customer
                     self._remove_customer(s, r)
@@ -177,53 +142,64 @@ class HVCM():
                     #Add a customer
                     self._add_customer(s, r)
 
+            #Update sticks
+            
+
+            for s in self.sticks.keys():
+                reverse_counts = np.cumsum(self.table_counts[s][::-1])[::-1]
+                reverse_counts = np.concatenate([reverse_counts[1:], [0]])
+                a = self.table_counts[s]
+                b = reverse_counts + self.theta_s[s]
+
+                self.sticks[s] = np.random.beta(a, b)
+                self.probs[s] = np.concatenate([self.sticks[s], [1]])
+                self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
+
 
     def _add_customer(self, s, r, cython_flag=True):
         if self.global_table_counts[r] == 0:
             self.global_table_counts[r] += 1
-            self.receiver_inds[s][r].insert(-1, self.num_tables_in_s[s])
-            self.global_num_tables += 1
-            self.num_customers_in_s[s] += 1
+            self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], -1, self.num_tables_in_s[s])
             self.num_tables_in_s[s] += 1
-            self.num_type_tables += 1
 
-            self.table_counts[s][self.receiver_inds[s][r][-2]] += 1
+            self.table_counts[s] = np.append(self.table_counts[s], [1])
             #Draw local stick
-            self.sticks[s].append(np.random.beta(1, self.theta_s[s]))
+            self.sticks[s] = np.concatenate([self.sticks[s], [np.random.beta(1, self.theta_s[s])]])
             self.probs[s] = np.concatenate([self.sticks[s], [1]])
             self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
 
             #Draw global stick
-            self.global_sticks.append(np.random.beta(1 - self.alpha, 
-                            self.theta + len(self.global_sticks) * self.alpha))
+            self.global_sticks = np.append(self.global_sticks, [np.random.beta(1 - self.alpha, 
+                            self.theta + len(self.global_sticks) * self.alpha)])
             self.global_probs = np.concatenate([self.global_sticks, [1]])
             self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
             return
 
-        probs = self.probs[s][self.receiver_inds[s][r]] 
-        
+        probs = self.probs[s][self.receiver_inds[s][r]].tolist() 
+
         table = choice_discrete_unnormalized(probs, np.random.rand())
 
-        if table == len(probs):
-            self.receiver_inds[s][r].insert(-1, self.num_tables_in_s)
+        if table == len(probs)-1:
+            self.receiver_inds[s][r]= np.insert(self.receiver_inds[s][r], -1, self.num_tables_in_s[s])
 
             #Draw stick
-            self.sticks[s].append(np.random.beta(1, self.theta_s[s]))
+            self.sticks[s] = np.concatenate([self.sticks[s], [np.random.beta(1, self.theta_s[s])]])
             self.probs[s] = np.concatenate([self.sticks[s], [1]])
             self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
 
             self.num_tables_in_s[s] += 1
             self.global_table_counts[r] += 1
-            self.global_num_tables += 1
+            self.table_counts[s] = np.append(self.table_counts[s], [1])
 
         self.table_counts[s][self.receiver_inds[s][r][table]] += 1
-        self.num_customers_in_s[s] += 1
-
 
     def _remove_customer(self, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
-        self.num_customers_in_s[s] -= 1
-        remove_probs = self.table_counts[s][self.receiver_inds[s][r][:-1]]
+        try:
+            remove_probs = self.table_counts[s][self.receiver_inds[s][r][:-1]].tolist()
+        except IndexError:
+            import pdb
+            pdb.set_trace()
 
         table = choice_discrete_unnormalized(remove_probs, np.random.rand())
         
@@ -232,12 +208,15 @@ class HVCM():
         if self.table_counts[s][ind] == 0:
             self.num_tables_in_s[s] -= 1
             self.global_table_counts[r] -= 1
-            self.global_num_tables -= 1
-            del self.sticks[s][ind]
+            self.sticks[s] = np.concatenate([self.sticks[s][:ind], self.sticks[s][ind+1:]])
             self.probs[s] = np.concatenate([self.sticks[s], [1]])
             self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
-
-            del self.receiver_inds[s][r][table]
+            self.table_counts[s] = np.concatenate([self.table_counts[s][:ind], self.table_counts[s][ind+1:]])
+            self.receiver_inds[s][r] = np.concatenate([self.receiver_inds[s][r][:table],
+                                                       self.receiver_inds[s][r][table+1:]])
+            #Removed the ind table - so all tables greater than ind+1 -> ind
+            for r in self.receiver_inds[s].keys():
+                self.receiver_inds[s][r][self.receiver_inds[s][r] > ind] = self.receiver_inds[s][r][self.receiver_inds[s][r] > ind] - 1
 
 
     def _sample_parameters(self):
@@ -279,13 +258,6 @@ class HVCM():
 
             self.theta_s[s] = np.random.gamma(np.sum(y_s) + self.lower_theta_hyperparams[s][0], 1/(1/self.lower_theta_hyperparams[s][1] - np.log(x_s)))
             self.alpha_s[s] = np.random.beta(self.lower_alpha_hyperparams[s][0] + np.sum(1 - y_s), self.lower_alpha_hyperparams[s][1] + temp_s)
-
-
-    def save(self, fname):
-        model = [self.store_thetas, self.store_alphas,
-                 self.running_mean_theta_s, self.running_mean_alpha_s]
-        with open(fname, 'wb') as outfile:
-            pickle.dump(model, outfile)
 
 
     def load_model(self, fname):
