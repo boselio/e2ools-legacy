@@ -259,7 +259,7 @@ class HTEEM():
         #a particular jump point.
         self.table_counts = defaultdict(lambda: defaultdict(list))
         self.sticks = defaultdict(lambda: defaultdict(defaultdict(list)))
-
+        self.arrival_times_dict = defaultdict(lambda: defaultdict(list))
         #Commenting this out beacause probs need to be generated on the fly
         #self.probs = defaultdict(lambda: np.array([1]))
 
@@ -296,7 +296,19 @@ class HTEEM():
         self._sample_table_configuration(interactions, initial=True)
 
 
-    def run_chain(self, save_dir, num_times, interactions, sample_parameters=True):
+    def run_chain(self, save_dir, num_times, interactions, change_times=None,
+                    sample_parameters=True):
+
+        max_time = interactions[-1][0]
+
+        if change_times is None:
+            change_times = [np.random.exponential(1 / nu)]
+            while True:
+                itime = np.random.exponential(1 / nu)
+                if change_times[-1] + itime > max_time:
+                    break
+                else:
+                    change_times.append(change_times[-1] + itime)
 
         self.initialize_state(interactions, save_dir)
 
@@ -503,7 +515,7 @@ class HTEEM():
         if initial:
             for t, s, interaction in interactions:
                 for r in interaction:
-                    self._add_customer(s, r)
+                    self._add_customer(t, s, r)
 
         else:
             for t, s, interaction in interactions:
@@ -535,7 +547,7 @@ class HTEEM():
             self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
 
 
-    def _add_customer(self, s, r, cython_flag=True):
+    def _add_customer(self, t, s, r, cython_flag=True):
         if len(self.global_table_counts) == r:
             assert r == len(self.global_sticks)
             self.global_table_counts = np.append(self.global_table_counts, [1])
@@ -543,11 +555,12 @@ class HTEEM():
             self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], -1, self.num_tables_in_s[s])
             self.num_tables_in_s[s] += 1
 
-            self.table_counts[s] = np.append(self.table_counts[s], [1])
+            ind = len(self.table_counts[s])
+            self.table_counts[s][ind].append(0)
             #Draw local stick
-            self.sticks[s] = np.concatenate([self.sticks[s], [np.random.beta(1, self.theta_s[s])]])
-            self.probs[s] = np.concatenate([self.sticks[s], [1]])
-            self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
+            self.sticks[s][ind].append(np.random.beta(1, self.theta_s[s]))
+            #self.probs[s] = np.concatenate([self.sticks[s], [1]])
+            #self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
 
             #Draw global stick
             self.global_sticks = np.append(self.global_sticks, [np.random.beta(1 - self.alpha, 
@@ -556,27 +569,23 @@ class HTEEM():
             self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
             return
 
-        probs = self.probs[s][self.receiver_inds[s][r]]
-        probs[-1] = probs[-1] * self.global_probs[r]
-        probs = probs.tolist()
-
+        probs = self.get_unnormalized_probabilities(t, s, r)
         table = choice_discrete_unnormalized(probs, np.random.rand())
 
         if table == len(probs)-1:
             self.receiver_inds[s][r]= np.insert(self.receiver_inds[s][r], -1, self.num_tables_in_s[s])
 
             #Draw stick
-            self.sticks[s] = np.concatenate([self.sticks[s], [np.random.beta(1, self.theta_s[s])]])
-            self.probs[s] = np.concatenate([self.sticks[s], [1]])
-            self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
+            self.sticks[s][self.num_tables_in_s[s]].append(np.random.beta(1, self.theta_s[s]))
+            self.table_counts[s][self.num_tables_in_s[s]].append(0)
 
             self.num_tables_in_s[s] += 1
             self.global_table_counts[r] += 1
-            self.table_counts[s] = np.append(self.table_counts[s], [0])
+            
 
         self.table_counts[s][self.receiver_inds[s][r][table]] += 1
 
-    def _remove_customer(self, s, r, cython_flag=True):
+    def _remove_customer(self, t, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
         try:
             remove_probs = self.table_counts[s][self.receiver_inds[s][r][:-1]].tolist()
