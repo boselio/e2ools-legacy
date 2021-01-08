@@ -44,7 +44,7 @@ class HTEEM():
 
         
 
-    def initialize_state(self, interactions, save_dir):
+    def initialize_state(self, interactions, change_times):
 
         #Initialize state variables
         ####Don't think I need this
@@ -116,7 +116,7 @@ class HTEEM():
                 else:
                     change_times.append(change_times[-1] + itime)
 
-        self.initialize_state(interactions, save_dir)
+        self.initialize_state(interactions, change_times)
         for ct in change_time:
             self.missed_arrival_times.append(ct)
 
@@ -191,10 +191,9 @@ class HTEEM():
         rec_insert_point = bisect_right([self.created_times[s][i] for i in self.receiver_inds[s][r][:-1]], t)
         self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], rec_insert_point, insert_point)
         self.num_tables_in_s[s] += 1
-        self.table_counts[s].insert(insert_point, [0])
+        self.table_counts[s].insert(insert_point, np.zeros(self.change_times))
         self.created_times[s].insert(insert_point, t)
-        self.arrival_times[s].insert(insert_point, [t])
-        self.sticks[s].insert(insert_point, [np.random.beta(1, self.theta_s[s])])
+        self.sticks[s].insert(insert_point, np.ones(self.change_times) * np.random.beta(1, self.theta_s[s]))
         self.global_table_counts[r] += 1
 
 
