@@ -152,6 +152,8 @@ class HTEEM():
 
         if initial:
             for t, s, interaction in interactions:
+                #import pdb
+                #pdb.set_trace()
                 for r in interaction:
                     self._add_customer(t, s, r)
 
@@ -187,18 +189,18 @@ class HTEEM():
 
     def insert_table(self, t, s, r):
         insert_point = bisect_right(self.created_times[s], t)
-        for r in self.receiver_inds[s].keys():
-            ii = self.receiver_inds[s][r] >= insert_point
-            self.receiver_inds[s][r][ii] = self.receiver_inds[s][r][ii] + 1
+        for r_prime in self.receiver_inds[s].keys():
+            ii = self.receiver_inds[s][r_prime] >= insert_point
+            self.receiver_inds[s][r_prime][ii] = self.receiver_inds[s][r_prime][ii] + 1
 
         rec_insert_point = bisect_right([self.created_times[s][i] for i in self.receiver_inds[s][r][:-1]], t)
         self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], rec_insert_point, insert_point)
         self.num_tables_in_s[s] += 1
-        self.table_counts[s].insert(insert_point, np.zeros(len(self.change_times)))
-        table_ind = bisect_right(self.change_times, t) - 1
-        self.table_counts[s][insert_point][table_ind] += 1
+        self.table_counts[s].insert(insert_point, np.zeros(len(self.change_times) + 1))
+        time_ind = bisect_right(self.change_times, t)
+        self.table_counts[s][insert_point][time_ind] += 1
         self.created_times[s].insert(insert_point, t)
-        self.sticks[s].insert(insert_point, np.ones(len(self.change_times)) * np.random.beta(1, self.theta_s[s]))
+        self.sticks[s].insert(insert_point, np.ones(len(self.change_times) + 1) * np.random.beta(1, self.theta_s[s]))
         self.global_table_counts[r] += 1
 
 
@@ -328,7 +330,7 @@ class HTEEM():
             degree_mats[s] =  np.array(self.table_counts[s])
             try:
                 s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
-                                                    np.zeros((1, len(self.change_times)))])
+                                                    np.zeros((1, len(self.change_times) + 1))])
             except ValueError:
                 import pdb
                 pdb.set_trace()
@@ -443,7 +445,7 @@ class HTEEM():
                     self.sticks[s_del][t_del][begin_ind:end_ind] = new_stick
 
 
-                if new_t == num_created_tables[s]:
+                if new_t == num_created_tables[new_s]:
                     self.change_locations[ind] = (-1, -1)
 
                 else:
@@ -457,7 +459,7 @@ class HTEEM():
                     try:
                         new_stick = self.draw_local_beta(degree_mats[new_s][new_t, ind+1:end_ind].sum(), 
                                                 s_mats[new_s][new_t, ind+1:end_ind].sum(), self.theta_s[new_s])
-                    except ValueError:
+                    except IndexError:
                         import pdb
                         pdb.set_trace()
 
