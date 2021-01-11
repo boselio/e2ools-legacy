@@ -23,6 +23,7 @@ from .teem import TemporalProbabilities
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set()
+from scipy.special import betaln
 
 from concurrent.futures import ProcessPoolExecutor
 
@@ -51,6 +52,7 @@ class HTEEM():
         self.global_table_counts = np.array([])
         ####
         self.change_times = change_times
+        self.change_locations = [-1 for _ in self.change_times]
         #Number of tables in each restaurant
         self.num_tables_in_s = defaultdict(int)
         #configuration: top level key is s (the restaurant),
@@ -67,6 +69,7 @@ class HTEEM():
         self.created_times = defaultdict(list)
         #Commenting this out beacause probs need to be generated on the fly
         #self.probs = defaultdict(lambda: np.array([1]))
+        self.change_inds = defaultdict(lambda: defaultdict(list))
 
         self.global_sticks = np.array([])
         self.global_probs = np.array([1])
@@ -313,16 +316,20 @@ class HTEEM():
         #table_inds = {}
         #counter = 0
 
+        num_senders = len(self.table_counts)
+
         for s in range(len(self.table_counts)):
             degree_mats[s] =  np.array(self.table_counts[s])
-            s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
-                                                np.zeros((1, len(self.change_times)+1))])
+            try:
+                s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
+                                                    np.zeros((1, len(self.change_times)))])
+            except ValueError:
+                import pdb
+                pdb.set_trace()
+
             for i in range(len(self.table_counts[s])):
                 begin_ind = bisect_right(self.change_times, self.created_times[s][i]) - 1
                 degree_mats[s][i, begin_ind] -= 1
-
-
-
 
         for ind in permuted_inds:
         #Need to calculate, the likelihood of each stick if that receiver
@@ -363,8 +370,11 @@ class HTEEM():
                 likelihood_components[s] = degree_mats[s][:num_created_recs, ind+1] * np.log(self.sticks[s][:num_created_recs, ind])
                 likelihood_components[s] += s_mats[s][:num_created_recs, ind+1] * np.log(1 - self.sticks[s][:num_created_recs, ind])
 
-                log_probs[s][:-1] += np.sum(likelihood_components) - likelihood_components
-                log_probs[s][-1] += np.sum(likelihood_components)
+                for s in range(num_senders):
+                    for ss in range(num_senders):
+                        log_probs[s][:-1] += np.sum(likelihood_components[ss])
+                        log_probs[s][-1] += np.sum(likelihood_components[ss])
+                    log_probs[s][:-1] -= likelihood_components[s]
 
             log_prob = np.concatenate([log_probs[s] for s in range(num_senders)])
             probs = np.exp(log_prob - logsumexp(log_prob))
@@ -393,7 +403,7 @@ class HTEEM():
                     self.sticks[new_s][new_t][ind+1:end_ind] = new_stick
 
                     new_stick = self.draw_beta(degrees_mats[new_s][new_t, begin_ind:ind+1], 
-                                                s_mats[new_s][new_t begin_ind:ind+1], self.alpha_s[new_s], 
+                                                s_mats[new_s][new_t, begin_ind:ind+1], self.alpha_s[new_s], 
                                                 self.theta_s[new_s])
                     self.sticks[new_s][new_t][begin_ind:ind+1] = new_stick
 
@@ -402,7 +412,9 @@ class HTEEM():
                 old_loc = old_locs[ind]
                 s_del = old_loc[0]
                 t_del = old_loc[1]
-                if r_delete != -1:
+                self.change_inds[s_del][t_del].remove(ind)
+
+                if t_del != num_created_tables[s_del]:
                     # redraw the beta that we had deleted.
                     begin_ind = self.get_last_switch(s_del, t_del, ct)
                     end_ind = self.get_next_switch(s_del, t_del, ct)
@@ -419,6 +431,9 @@ class HTEEM():
                     self.change_locations[ind] = (new_s, -1)
 
                 else:
+                    self.change_locations[ind] = (new_s, new_t)
+                    insert_ind = bisect(self.change_inds[new_s][new_t], ind)
+                    self.change_inds[new_s][new_t].insert(insert_ind, ind)
                     # Draw the beta backward
                     begin_ind = self.get_last_switch(new_s, new_t, ct)
                     end_ind = self.get_next_switch(new_s, new_t, ct)
@@ -431,16 +446,16 @@ class HTEEM():
                     self.sticks[new_s][new_t][ind+1:end_ind] = new_stick
 
                     new_stick = self.draw_beta(degrees_mats[new_s][new_t, begin_ind:ind+1], 
-                                                s_mats[new_s][new_t begin_ind:ind+1], self.alpha_s[new_s], 
+                                                s_mats[new_s][new_t, begin_ind:ind+1], self.alpha_s[new_s], 
                                                 self.theta_s[new_s])
                     self.sticks[new_s][new_t][begin_ind:ind+1] = new_stick
 
         return 
 
 
-    def get_next_switck(self, s, i, t):
-        pass
+    def get_next_switch(self, s, i, ind):
+        return self.change_inds[s][i][bisect_right(self.change_inds[s][i], ind)]
 
 
     def get_last_switch(self, s, i, t):
-        pass
+        return self.change_inds[s][i][bisect_right(self.change_inds[s][i], ind) - 2]
