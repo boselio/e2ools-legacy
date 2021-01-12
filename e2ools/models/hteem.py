@@ -82,6 +82,11 @@ class HTEEM():
         self.r_set = set([r for interaction in interactions for r in interaction[2]])
         self.r_size = len(self.r_set)
 
+        self.created_sender_times = {}
+        for (t, s, receivers) in interactions:
+            if s not in self.created_sender_times:
+                self.created_sender_times[s] = t
+
         if self.alpha is None:
             self.alpha = np.random.beta(*self.alpha_hyperparams)
 
@@ -151,20 +156,20 @@ class HTEEM():
     def _sample_table_configuration(self, interactions, initial=False):
 
         if initial:
-            for t, s, interaction in interactions:
+            for t, s, receivers in interactions:
                 #import pdb
                 #pdb.set_trace()
-                for r in interaction:
+                for r in receivers:
                     self._add_customer(t, s, r)
 
         else:
-            for t, s, interaction in interactions:
-                for r in interaction:
+            for t, s, receivers in interactions:
+                for r in receivers:
                     #Remove a customer
-                    self._remove_customer(s, r)
+                    self._remove_customer(t, s, r)
 
                     #Add a customer
-                    self._add_customer(s, r)
+                    self._add_customer(t, s, r)
 
             #Update local sticks
             for s in self.sticks.keys():
@@ -324,7 +329,7 @@ class HTEEM():
         #table_inds = {}
         #counter = 0
 
-        num_senders = len(self.table_counts)
+        num_senders = len(self.created_sender_times)
 
         for s in range(len(self.table_counts)):
             degree_mats[s] =  np.array(self.table_counts[s])
@@ -367,7 +372,9 @@ class HTEEM():
 
             likelihood_components = {}
             #Calculate likelihood of each jumps
-            for s in range(num_senders):
+            created_senders = [s for (s, t) in self.created_sender_times.items() if t < ct]
+
+            for s in created_senders:
                 #Calculate log probs for all potential jumps, at the period BEFORE the jump
                 num_created_tables[s] = len([i for i in self.created_times[s] if i < ct])
                 probs[s] = np.array([self.get_stick(s, i, ct - 1e-8) for i in range(num_created_tables[s])] + [1])
@@ -386,24 +393,29 @@ class HTEEM():
                 likelihood_components[s] = degree_mats[s][:num_created_tables[s], ind+1] * np.log(np.array(self.sticks[s])[:num_created_tables[s], ind])
                 likelihood_components[s] += s_mats[s][:num_created_tables[s], ind+1] * np.log(1 - np.array(self.sticks[s])[:num_created_tables[s], ind])
 
-            for s in range(num_senders):
-                for ss in range(num_senders):
+            for s in created_senders:
+                for ss in created_senders:
                     log_probs[s][:-1] += np.sum(likelihood_components[ss])
                     log_probs[s][-1] += np.sum(likelihood_components[ss])
                 log_probs[s][:-1] -= likelihood_components[s]
 
             #import pdb
             #pdb.set_trace()
-            log_prob = np.concatenate([log_probs[s] for s in range(num_senders)])
-            probs = np.exp(log_prob - logsumexp(log_prob))
+            #First, choose sender:
+            integrated_sender_log_probs = [logsumexp(log_probs[s]) for s in created_senders]
+            integrated_sender_probs = np.exp(integrated_sender_log_probs - logsumexp(integrated_sender_log_probs))
+            new_s = np.random.choice(created_senders, p=integrated_sender_probs)
 
-            num_total_tables = sum(num_created_tables.values())
-            new_ind = np.random.choice(num_total_tables+num_senders, p=probs)
+            #log_prob = np.concatenate([log_probs[s] for s in range(num_senders)])
+            #probs = np.exp(log_prob - logsumexp(log_prob))
+            probs = np.exp(log_probs[new_s] - logsumexp(log_probs[new_s]))
+            #num_total_tables = sum(num_created_tables.values())
+            new_t = np.random.choice(num_created_tables[new_s] + 1, p=probs)
 
-            temp = np.cumsum([num_created_tables[i] + 1 for i in range(num_senders)])
-            new_s = bisect_right(temp, new_ind)
-            if new_s > 0:
-                new_t = new_ind - temp[new_s - 1]
+            #temp = np.cumsum([num_created_tables[i] + 1 for i in range(num_senders)])
+            #new_s = bisect_right(temp, new_ind)
+            #if new_s > 0:
+            #    new_t = new_ind - temp[new_s - 1]
 
             new_choice = (new_s, new_t)
 
@@ -413,17 +425,17 @@ class HTEEM():
                     continue
                 else:
                     #Draw the beta
-                    end_ind = self.get_next_switch(new_s, new_t, ct)
+                    end_ind = self.get_next_switch(new_s, new_t, ind)
                     if end_ind == -1:
                         end_time = max_time
-                    begin_ind = self.get_last_switch(new_s, new_t, ct)
+                    begin_ind = self.get_last_switch(new_s, new_t, ind)
                     end_ind = bisect_right(interaction_times, end_time)
 
-                    new_stick = self.draw_local_beta(degrees_mats[new_s][new_t, ind+1:end_ind].sum(), 
+                    new_stick = self.draw_local_beta(degree_mats[new_s][new_t, ind+1:end_ind].sum(), 
                                                 s_mats[new_s][new_t, ind+1:end_ind].sum(), self.theta_s[new_s])
                     self.sticks[new_s][new_t][ind+1:end_ind] = new_stick
 
-                    new_stick = self.draw_local_beta(degrees_mats[new_s][new_t, begin_ind:ind+1].sum(), 
+                    new_stick = self.draw_local_beta(degree_mats[new_s][new_t, begin_ind:ind+1].sum(), 
                                                 s_mats[new_s][new_t, begin_ind:ind+1].sum(), self.theta_s[new_s])
                     self.sticks[new_s][new_t][begin_ind:ind+1] = new_stick
 
@@ -435,17 +447,19 @@ class HTEEM():
                 if s_del != -1:
                     self.change_inds[s_del][t_del].remove(ind)
                     # redraw the beta that we had deleted.
-                    begin_ind = self.get_last_switch(s_del, t_del, ct)
-                    end_ind = self.get_next_switch(s_del, t_del, ct)
+                    begin_ind = self.get_last_switch(s_del, t_del, ind)
+                    end_ind = self.get_next_switch(s_del, t_del, ind)
                     if end_time == -1:
                         end_time = max_time
 
-                    new_stick = self.draw_local_beta(degrees_mats[s_del][t_del, begin_ind:end_ind].sum(), 
+                    new_stick = self.draw_local_beta(degree_mats[s_del][t_del, begin_ind:end_ind].sum(), 
                                                 s_mats[s_del][t_del, begin_ind:end_ind].sum(), self.theta_s[s_del])
                     self.sticks[s_del][t_del][begin_ind:end_ind] = new_stick
 
 
                 if new_t == num_created_tables[new_s]:
+                    #import pdb
+                    #pdb.set_trace()
                     self.change_locations[ind] = (-1, -1)
 
                 else:
@@ -476,18 +490,18 @@ class HTEEM():
         after_ind = bisect_right(self.change_inds[s][i], ind)
         if after_ind == len(self.change_inds[s][i]):
             return None
-        else:
-            return self.change_inds[s][i][after_ind]
+        return self.change_inds[s][i][after_ind]
         
-
 
     def get_last_switch(self, s, i, ind):
         before_ind = bisect_left(self.change_inds[s][i], ind)
         if before_ind == 0:
             return 0
-        else:
-            return self.change_inds[s][i][before_ind] + 1
+        elif before_ind == len(self.change_inds[s][i]):
+            before_ind = -1
 
+        return self.change_inds[s][i][before_ind] + 1
+            
 
     def draw_local_beta(self, d, s, theta):
         return np.random.beta(1 + d, s + theta)
