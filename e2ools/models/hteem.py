@@ -370,7 +370,8 @@ class HTEEM():
             probs = {}
             log_probs = {}
 
-            likelihood_components = {}
+            before_likelihood_components = {}
+            after_likelihood_components = {}
             #Calculate likelihood of each jumps
             created_senders = [s for (s, t) in self.created_sender_times.items() if t < ct]
 
@@ -387,17 +388,17 @@ class HTEEM():
             
                 #Now, need to add all other likelihood components, i.e. all degrees for
                 #which the receiver did not jump.
-                likelihood_components[s] = degree_mats[s][:num_created_tables[s], ind+1] * np.log(np.array(self.sticks[s])[:num_created_tables[s], ind+1])
-                likelihood_components[s] += s_mats[s][:num_created_tables[s], ind+1] * np.log(1 - np.array(self.sticks[s])[:num_created_tables[s], ind+1])
+                after_likelihood_components[s] = degree_mats[s][:num_created_tables[s], ind+1] * np.log(np.array(self.sticks[s])[:num_created_tables[s], ind+1])
+                after_likelihood_components[s] += s_mats[s][:num_created_tables[s], ind+1] * np.log(1 - np.array(self.sticks[s])[:num_created_tables[s], ind+1])
 
-                likelihood_components[s] = degree_mats[s][:num_created_tables[s], ind+1] * np.log(np.array(self.sticks[s])[:num_created_tables[s], ind])
-                likelihood_components[s] += s_mats[s][:num_created_tables[s], ind+1] * np.log(1 - np.array(self.sticks[s])[:num_created_tables[s], ind])
+                before_likelihood_components[s] = degree_mats[s][:num_created_tables[s], ind+1] * np.log(np.array(self.sticks[s])[:num_created_tables[s], ind])
+                before_likelihood_components[s] += s_mats[s][:num_created_tables[s], ind+1] * np.log(1 - np.array(self.sticks[s])[:num_created_tables[s], ind])
 
             for s in created_senders:
                 for ss in created_senders:
-                    log_probs[s][:-1] += np.sum(likelihood_components[ss])
-                    log_probs[s][-1] += np.sum(likelihood_components[ss])
-                log_probs[s][:-1] -= likelihood_components[s]
+                    log_probs[s] += np.sum(before_likelihood_components[ss])
+                    log_probs[s] += np.sum(after_likelihood_components[ss])
+                log_probs[s][:-1] -= after_likelihood_components[s]
 
             #import pdb
             #pdb.set_trace()
