@@ -49,6 +49,7 @@ class HTEEM():
         #Initialize state variables
         ####Don't think I need this
         #Number of total tables across franchise serving each dish
+        self.max_time = interactions[-1][0]
         self.global_table_counts = np.array([])
         ####
         self.change_times = change_times
@@ -65,7 +66,6 @@ class HTEEM():
         #a particular jump point.
         self.table_counts = defaultdict(list)
         self.sticks = defaultdict(list)
-        self.arrival_times = defaultdict(list)
         self.created_times = defaultdict(list)
         #Commenting this out beacause probs need to be generated on the fly
         #self.probs = defaultdict(lambda: np.array([1]))
@@ -107,7 +107,7 @@ class HTEEM():
                 self.theta_s = {s: self.theta_s for s in self.s_set}
 
         self._sample_table_configuration(interactions, initial=True)
-        self.missed_arrival_times = []
+
 
 
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
@@ -125,23 +125,24 @@ class HTEEM():
                     change_times.append(change_times[-1] + itime)
 
         self.initialize_state(interactions, change_times)
-        for ct in change_time:
-            self.missed_arrival_times.append(ct)
 
-        s_time = time.time()
+        
         for t in range(num_times):
-            if t % 100 == 0:
-                print(t)
+            s_time = time.time()
+            print(t)
 
             self._sample_jump_locations(interactions)
             self._sample_table_configuration(interactions)
 
             params = {'alpha': self.alpha, 'theta': self.theta,
                         'theta_s': self.theta_s,
-                        'global_counts': self.global_table_counts,
-                        'sticks': self.sticks,
                         'receiver_inds': self.receiver_inds,
-                        'global_sticks': self.global_sticks}
+                        'global_sticks': self.global_sticks,
+                        'sticks': self.sticks,
+                        'change_times': change_times,
+                        'table_counts': self.table_counts,
+                        'created_times': self.created_times
+                        }
 
 
             if t >= num_times / 2:
@@ -149,8 +150,8 @@ class HTEEM():
                 with file_dir.open('wb') as outfile:
                     pickle.dump(params, outfile)
 
-        e_time = time.time()
-        print(e_time - s_time)
+            e_time = time.time()
+            print(e_time - s_time)
 
 
     def _sample_table_configuration(self, interactions, initial=False):
@@ -162,34 +163,62 @@ class HTEEM():
                 for r in receivers:
                     self._add_customer(t, s, r)
 
+            degree_mats = {}
+            s_mats = {}
+
+            #beta_mat = np.zeros((num_tables, len(change_times) + 1))
+            #table_inds = {}
+            #counter = 0
+
+            num_senders = len(self.created_sender_times)
+
+            for s in range(len(self.table_counts)):
+                degree_mats[s] =  np.array(self.table_counts[s])
+                s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
+                                                        np.zeros((1, len(self.change_times) + 1))])
+  
+
+            for i in range(len(self.table_counts[s])):
+                begin_ind = bisect_right(self.change_times, self.created_times[s][i])
+                degree_mats[s][i, begin_ind] -= 1
+
+            for s in range(len(self.table_counts)):
+                for t in range(len(self.table_counts[s])):
+                    #draw beta
+                    end_ind = self.get_next_switch(s, t, 0)
+
+                    new_stick = self.draw_local_beta(degree_mats[s][t,:end_ind].sum(),
+                                        s_mats[s][t,:end_ind].sum(), self.theta_s[s])
+                    self.sticks[s][t][:end_ind] = new_stick
+
         else:
             for t, s, receivers in interactions:
                 for r in receivers:
                     #Remove a customer
-                    self._remove_customer(t, s, r)
+                    removed = self._remove_customer(t, s, r)
+                    if removed:
+                        #Add a customer
+                        self._add_customer(t, s, r)
 
-                    #Add a customer
-                    self._add_customer(t, s, r)
+        #Update local sticks
+        #for s in self.sticks.keys():
+        #    reverse_counts = np.cumsum(self.table_counts[s][::-1])[::-1]
+        #    reverse_counts = np.concatenate([reverse_counts[1:], [0]])
+        #    a = 1 + self.table_counts[s]
+        #    b = reverse_counts + self.theta_s[s]
 
-            #Update local sticks
-            for s in self.sticks.keys():
-                reverse_counts = np.cumsum(self.table_counts[s][::-1])[::-1]
-                reverse_counts = np.concatenate([reverse_counts[1:], [0]])
-                a = 1 + self.table_counts[s]
-                b = reverse_counts + self.theta_s[s]
+        #    self.sticks[s] = np.random.beta(a, b)
+        #    self.probs[s] = np.concatenate([self.sticks[s], [1]])
+        #    self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
 
-                self.sticks[s] = np.random.beta(a, b)
-                self.probs[s] = np.concatenate([self.sticks[s], [1]])
-                self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
-
-            #Update global sticks
-            reverse_counts = np.cumsum(self.global_table_counts[::-1])[::-1]
-            reverse_counts = np.concatenate([reverse_counts[1:], [0]])
-            a = 1 -self.alpha + self.global_table_counts
-            b = reverse_counts + self.theta + np.arange(1, len(self.global_table_counts)+ 1) * self.alpha
-            self.global_sticks = np.random.beta(a, b)
-            self.global_probs = np.concatenate([self.global_sticks, [1]])
-            self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
+        #Update global sticks
+        reverse_counts = np.cumsum(self.global_table_counts[::-1])[::-1]
+        reverse_counts = np.concatenate([reverse_counts[1:], [0]])
+        a = 1 - self.alpha + self.global_table_counts
+        b = reverse_counts + self.theta + np.arange(1, len(self.global_table_counts)+ 1) * self.alpha
+        self.global_sticks = np.random.beta(a, b)
+        self.global_probs = np.concatenate([self.global_sticks, [1]])
+        self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
 
 
     def insert_table(self, t, s, r):
@@ -198,7 +227,12 @@ class HTEEM():
             ii = self.receiver_inds[s][r_prime] >= insert_point
             self.receiver_inds[s][r_prime][ii] = self.receiver_inds[s][r_prime][ii] + 1
 
-        rec_insert_point = bisect_right([self.created_times[s][i] for i in self.receiver_inds[s][r][:-1]], t)
+        try:
+            rec_insert_point = bisect_right(self.receiver_inds[s][r][:-1], insert_point)
+        except IndexError:
+            import pdb
+            pdb.set_trace()
+
         self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], rec_insert_point, insert_point)
         self.num_tables_in_s[s] += 1
         self.table_counts[s].insert(insert_point, np.zeros(len(self.change_times) + 1))
@@ -207,6 +241,18 @@ class HTEEM():
         self.created_times[s].insert(insert_point, t)
         self.sticks[s].insert(insert_point, np.ones(len(self.change_times) + 1) * np.random.beta(1, self.theta_s[s]))
         self.global_table_counts[r] += 1
+
+        for s_temp in range(len(self.receiver_inds)):
+            temp = np.sort(np.concatenate([l[:-1] for l in self.receiver_inds[s].values()]))
+            assert (temp == np.arange(len(temp))).all()
+            assert len(temp) == len(self.created_times[s])
+            assert len(temp) == len(self.table_counts[s])
+            assert np.all(np.diff(self.created_times[s_temp]) >= 0)
+        try:
+            assert np.all(np.diff(self.receiver_inds[s][r][:-1]) >= 0)
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
 
 
     def _add_customer(self, t, s, r, cython_flag=True):
@@ -232,11 +278,8 @@ class HTEEM():
         else:
             table = table_inds[choice]
             time_ind = bisect_right(self.change_times, t)
-            try:
-                self.table_counts[s][table][time_ind] += 1
-            except IndexError:
-                import pdb
-                pdb.set_trace()
+            self.table_counts[s][table][time_ind] += 1
+
 
 
     def get_unnormalized_probabilities(self, t, s, r):
@@ -249,8 +292,12 @@ class HTEEM():
         sticks, time_inds = zip(*[self.get_stick(s, i, t, return_index=True) for i in range(max_point)])
         probs = np.concatenate([sticks, [1]])
         probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
-        max_rec_point = bisect_right([self.created_times[s][i] for i in self.receiver_inds[s][r][:-1]], t)
-        rec_probs = np.concatenate([probs[self.receiver_inds[s][r][:max_rec_point]], probs[-1:]])
+        try:
+            max_rec_point = bisect_right([self.created_times[s][i] for i in self.receiver_inds[s][r][:-1]], t)
+            rec_probs = np.concatenate([probs[self.receiver_inds[s][r][:max_rec_point]], probs[-1:]])
+        except IndexError:
+            import pdb
+            pdb.set_trace()
         rec_probs[-1] = rec_probs[-1] * self.global_probs[r]
     
         return rec_probs.tolist(), self.receiver_inds[s][r][:max_rec_point]
@@ -275,7 +322,7 @@ class HTEEM():
             index = -1
             s = 0
         else:
-            index = bisect.bisect_right(self.change_times, t) - 1
+            index = bisect.bisect_right(self.change_times, t)
             s = self.table_counts[s][i][index]
 
         if return_index:
@@ -286,13 +333,40 @@ class HTEEM():
 
     def _remove_customer(self, t, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
-        remove_probs, remove_inds = zip(*[self.get_table_counts(s, i, t, return_index=True) 
+        remove_probs, time_inds = zip(*[self.get_table_counts(s, i, t, return_index=True) 
                                             for i in self.receiver_inds[s][r][:-1]])
 
+        remove_probs = list(remove_probs)
+        #Check to see if any of the tables were created at this time
+        deleted_inds = []
+        deleted_tables = []
+
+        time_ind = bisect.bisect_right(self.change_times, t)
+        if time_ind == 0:
+            before_time = 0
+        else:
+            before_time = self.change_times[time_ind - 1]
+
+        for i, ind in enumerate(self.receiver_inds[s][r][:-1]):
+            if (before_time <= self.created_times[s][ind]) and (self.created_times[s][ind] <= t):
+                if sum(self.table_counts[s][ind]) != 1:
+                    remove_probs[i] -= 1
+                    deleted_inds.append(ind)
+                    deleted_tables.append(i)
+
+        #Check to see if remove probs > 0
+        if sum(remove_probs) == 0:
+            return False
+        
         table = choice_discrete_unnormalized(remove_probs, np.random.rand())
         
         ind = self.receiver_inds[s][r][table]
-        self.table_counts[s][ind][remove_inds[table]] -= 1
+        self.table_counts[s][ind][time_inds[table]] -= 1
+        try:
+            assert self.table_counts[s][ind][time_inds[table]] >= 0
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
         if sum(self.table_counts[s][ind]) == 0:
             self.num_tables_in_s[s] -= 1
             self.global_table_counts[r] -= 1
@@ -300,9 +374,41 @@ class HTEEM():
             self.table_counts[s] = self.table_counts[s][:ind] +  self.table_counts[s][ind+1:]
             self.receiver_inds[s][r] = np.concatenate([self.receiver_inds[s][r][:table],
                                                        self.receiver_inds[s][r][table+1:]])
+            self.created_times[s] = self.created_times[s][:ind] + self.created_times[s][ind+1:]
             #Removed the ind table - so all tables greater than ind+1 -> ind
             for r in self.receiver_inds[s].keys():
                 self.receiver_inds[s][r][self.receiver_inds[s][r] > ind] = self.receiver_inds[s][r][self.receiver_inds[s][r] > ind] - 1
+
+
+        for s_temp in self.receiver_inds.keys():
+            temp = np.sort(np.concatenate([l[:-1] for l in self.receiver_inds[s_temp].values()]))
+            try:
+                assert (temp == np.arange(len(temp))).all()
+            except AssertionError:
+                import pdb
+                pdb.set_trace()
+
+            try:
+                assert len(temp) == len(self.created_times[s_temp])
+            except AssertionError:
+                import pdb
+                pdb.set_trace()
+
+            try:
+                assert len(temp) == len(self.table_counts[s_temp])
+            except AssertionError:
+                import pdb
+                pdb.set_trace()
+            
+            
+            
+        try:
+            assert self.receiver_inds[s][ind][-1] == -1
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+        return True
+
 
 
     def _sample_jump_locations(self, interactions):
@@ -446,16 +552,21 @@ class HTEEM():
                 s_del = old_loc[0]
                 t_del = old_loc[1]
                 if s_del != -1:
-                    self.change_inds[s_del][t_del].remove(ind)
-                    # redraw the beta that we had deleted.
-                    begin_ind = self.get_last_switch(s_del, t_del, ind)
-                    end_ind = self.get_next_switch(s_del, t_del, ind)
-                    if end_time == -1:
-                        end_time = max_time
+                    if t_del < num_created_tables[s_del]:
+                        self.change_inds[s_del][t_del].remove(ind)
+                        # redraw the beta that we had deleted.
+                        begin_ind = self.get_last_switch(s_del, t_del, ind)
+                        end_ind = self.get_next_switch(s_del, t_del, ind)
+                        if end_time == -1:
+                            end_time = max_time
 
-                    new_stick = self.draw_local_beta(degree_mats[s_del][t_del, begin_ind:end_ind].sum(), 
-                                                s_mats[s_del][t_del, begin_ind:end_ind].sum(), self.theta_s[s_del])
-                    self.sticks[s_del][t_del][begin_ind:end_ind] = new_stick
+                        try:
+                            new_stick = self.draw_local_beta(degree_mats[s_del][t_del, begin_ind:end_ind].sum(), 
+                                                    s_mats[s_del][t_del, begin_ind:end_ind].sum(), self.theta_s[s_del])
+                        except IndexError:
+                            import pdb
+                            pdb.set_trace()
+                        self.sticks[s_del][t_del][begin_ind:end_ind] = new_stick
 
 
                 if new_t == num_created_tables[new_s]:
@@ -483,6 +594,15 @@ class HTEEM():
                     new_stick = self.draw_local_beta(degree_mats[new_s][new_t, begin_ind:ind+1].sum(), 
                                                 s_mats[new_s][new_t, begin_ind:ind+1].sum(), self.theta_s[new_s])
                     self.sticks[new_s][new_t][begin_ind:ind+1] = new_stick
+
+        for s in range(num_senders):
+            for t in range(len(self.table_counts[s])):
+                #draw beta
+                end_ind = self.get_next_switch(s, t, 0)
+
+                new_stick = self.draw_local_beta(degree_mats[s][t,:end_ind].sum(),
+                                        s_mats[s][t,:end_ind].sum(), self.theta_s[s])
+                self.sticks[s][t][:end_ind] = new_stick
 
         return 
 
