@@ -36,7 +36,8 @@ def create_hierarchical_temporal_e2_data(alpha=0.1, theta=10,
                                             num_interactions=1000, delta=10,
                                             alpha_s=0.1, theta_s=10,
                                             theta_local=10,
-                                            nu=1, num_recs_per_interaction=None):
+                                            nu=1, num_recs_per_interaction=None,
+                                            senders=None):
 
     def single_int(num):
         while True:
@@ -69,9 +70,11 @@ def create_hierarchical_temporal_e2_data(alpha=0.1, theta=10,
         else:
             change_times.append(change_times[-1] + itime)
 
-    sender_sticks, senders = pys.pitman_yor_sticks(alpha_s, theta_s, 
+    if senders is None:
+        sender_sticks, senders = pys.pitman_yor_sticks(alpha_s, theta_s, 
                                                     num_interactions, 
                                                     single_int(1))
+
 
 
     t = 0
@@ -99,6 +102,7 @@ def create_hierarchical_temporal_e2_data(alpha=0.1, theta=10,
     created_times = defaultdict(list)
     num_senders = 0
 
+    table_counts = defaultdict(list)
     while t < max_time:
 
         if (change_ind < len(change_times)) and (change_times[change_ind] < interaction_times[interaction_ind]):
@@ -123,8 +127,6 @@ def create_hierarchical_temporal_e2_data(alpha=0.1, theta=10,
             t = change_times[change_ind]
             change_ind += 1
         else:
-            #import pdb
-            #pdb.set_trace()
             s = senders[interaction_ind][0]
             interaction = [interaction_times[interaction_ind], s, []]
 
@@ -152,8 +154,11 @@ def create_hierarchical_temporal_e2_data(alpha=0.1, theta=10,
 
                     current_local_probabilities[s] = np.array(current_local_sticks[s] + [1])
                     current_local_probabilities[s][1:] = current_local_probabilities[s][1:] * np.cumprod(1 - current_local_probabilities[s][:-1])
+                    table_counts[s].append(0)
 
                 interaction[2].append(local_labels[s][table])
+
+                table_counts[s][table] += 1
 
             interactions.append(interaction)
 
@@ -161,5 +166,5 @@ def create_hierarchical_temporal_e2_data(alpha=0.1, theta=10,
             interaction_ind += 1
 
     return (interactions, drawn_sticks, locations, created_local_times, 
-        created_local_sticks, local_labels, upper_level_sticks, change_times)   
+        created_local_sticks, local_labels, upper_level_sticks, change_times, table_counts)   
 

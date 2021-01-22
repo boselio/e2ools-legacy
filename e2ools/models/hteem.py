@@ -52,13 +52,15 @@ class HTEEM():
         self.max_time = interactions[-1][0]
         self.global_table_counts = np.array([])
         ####
+        #Sampled (or given) change times
         self.change_times = change_times
+        #The locations that are sampled for each change time.
         self.change_locations = [(-1, -1) for _ in self.change_times]
+        #indices of changes, per sender and per table
+        self.table_change_inds = defaultdict(lambda: defaultdict(list))
         #Number of tables in each restaurant
         self.num_tables_in_s = defaultdict(int)
-        #configuration: top level key is s (the restaurant),
-        #lower level key is r (type of dish),
-        #lowest level value is list of tables with # of customers.
+        #The inds that are for a particular receiver, in addition to the new table probability.
         self.receiver_inds = defaultdict(lambda: defaultdict(lambda: np.array([-1], dtype='int')))
 
         #For temporal version, table counts now must be list of lists (or arrays)
@@ -66,11 +68,11 @@ class HTEEM():
         #a particular jump point.
         self.table_counts = defaultdict(list)
         self.sticks = defaultdict(list)
-        self.created_times = defaultdict(list)
-        #Commenting this out beacause probs need to be generated on the fly
-        #self.probs = defaultdict(lambda: np.array([1]))
-        self.change_inds = defaultdict(lambda: defaultdict(list))
+        #Created inds of each table, accordinf to the change times. 
+        #This is a new thing; used to be created_times.
+        self.created_inds = defaultdict(list)
 
+        #Global info
         self.global_sticks = np.array([])
         self.global_probs = np.array([1])
 
@@ -111,7 +113,8 @@ class HTEEM():
 
 
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
-                    sample_parameters=True):
+                    sample_parameters=True, update_alpha=False, update_theta=False,
+                    update_interarrival_times=False):
 
         max_time = interactions[-1][0]
 
@@ -131,8 +134,8 @@ class HTEEM():
             s_time = time.time()
             print(t)
 
-            self._sample_jump_locations(interactions)
             self._sample_table_configuration(interactions)
+            self._sample_jump_locations(interactions)
 
             params = {'alpha': self.alpha, 'theta': self.theta,
                         'theta_s': self.theta_s,
@@ -141,7 +144,7 @@ class HTEEM():
                         'sticks': self.sticks,
                         'change_times': change_times,
                         'table_counts': self.table_counts,
-                        'created_times': self.created_times
+                        'created_inds': self.created_inds
                         }
 
 
@@ -154,8 +157,53 @@ class HTEEM():
             print(e_time - s_time)
 
 
+    def infer(self, interactions,  num_chains=4, num_iters_per_chain=500, 
+                    update_alpha=True, update_theta=True, change_times=None, 
+                    update_interarrival_times=True):   
+
+        rc_func = partial(run_chain, num_times=num_iters_per_chain, interactions=interactions,
+                      change_times=change_times, update_alpha=update_alpha, update_theta=update_theta, 
+                      update_interarrival_times=update_interarrival_times)
+
+        if not pathlib.Path(save_dir).is_dir():
+            pathlib.Path(save_dir).mkdir(parents=True)
+
+        if change_times is not None:
+            with (pathlib.Path(save_dir) / 'initial_change_times.pkl').open('wb') as outfile:
+                pickle.dump(change_times, outfile)
+            
+        save_dirs = [pathlib.Path(save_dir) / '{}'.format(i) 
+                     for i in range(num_chains)]
+
+        for sd in save_dirs:
+            if not sd.is_dir():
+                sd.mkdir(parents=True)
+
+        start_time = time.time()
+        print('Beginning Inference:')
+        tp_lists = []
+
+        with ProcessPoolExecutor() as executor:
+            for _ in executor.map(rc_func, save_dirs):
+                continue
+        end_time = time.time()
+
+        print('Took {} minutes.'.format((end_time - start_time) / 60))
+
+        #print('Calculating posterior estimates:')
+        #start_time = time.time()
+
+        #((upper_limits, lower_limits, means),
+        #(probs_ul, probs_ll, probs)) = get_limits_and_means_different_times(save_dir, num_chains, num_iters_per_chain)
+        #end_time = time.time()
+
+        #print('Took {} minutes.'.format((end_time - start_time) / 60))
+
+        return
+
     def _sample_table_configuration(self, interactions, initial=False):
 
+        
         if initial:
             for t, s, receivers in interactions:
                 #import pdb
@@ -176,28 +224,36 @@ class HTEEM():
                 degree_mats[s] =  np.array(self.table_counts[s])
                 s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
                                                         np.zeros((1, len(self.change_times) + 1))])
-  
 
-            for i in range(len(self.table_counts[s])):
-                begin_ind = bisect_right(self.change_times, self.created_times[s][i])
-                degree_mats[s][i, begin_ind] -= 1
+                for table in range(len(self.table_counts[s])):
+                    try:
+                        degree_mats[s][table, self.created_inds[s][table]] -= 1
+                    except IndexError:
+                        import pdb
+                        pdb.set_trace()
 
             for s in range(len(self.table_counts)):
-                for t in range(len(self.table_counts[s])):
+                for table in range(len(self.table_counts[s])):
                     #draw beta
-                    end_ind = self.get_next_switch(s, t, 0)
+                    begin_ind = self.created_inds[s][table]
 
-                    new_stick = self.draw_local_beta(degree_mats[s][t,:end_ind].sum(),
-                                        s_mats[s][t,:end_ind].sum(), self.theta_s[s])
-                    self.sticks[s][t][:end_ind] = new_stick
+                    new_stick = self.draw_local_beta(degree_mats[s][table,:].sum(),
+                                        s_mats[s][table,:].sum(), self.theta_s[s])
+                    self.sticks[s][table][begin_ind:] = new_stick
+                    self.sticks[s][table][:begin_ind] = 1
 
         else:
-            for t, s, receivers in interactions:
+            interaction_inds = np.random.permutation(len(interactions))
+            #for t, s, interaction in interactions:
+            for i in interaction_inds:
+                t, s, receivers = interactions[i]
                 for r in receivers:
                     #Remove a customer
-                    removed = self._remove_customer(t, s, r)
+                    removed = self._remove_customer_new(t, s, r)
                     if removed:
                         #Add a customer
+                        #import pdb
+                        #pdb.set_trace()
                         self._add_customer(t, s, r)
 
         #Update local sticks
@@ -214,7 +270,8 @@ class HTEEM():
         #Update global sticks
         reverse_counts = np.cumsum(self.global_table_counts[::-1])[::-1]
         reverse_counts = np.concatenate([reverse_counts[1:], [0]])
-        a = 1 - self.alpha + self.global_table_counts
+        #minus 1 because all the global "start" in the same global interval.
+        a = 1 - self.alpha + self.global_table_counts - 1
         b = reverse_counts + self.theta + np.arange(1, len(self.global_table_counts)+ 1) * self.alpha
         self.global_sticks = np.random.beta(a, b)
         self.global_probs = np.concatenate([self.global_sticks, [1]])
@@ -222,7 +279,11 @@ class HTEEM():
 
 
     def insert_table(self, t, s, r):
-        insert_point = bisect_right(self.created_times[s], t)
+        #Randomize?
+        insert_left_point = bisect_left(self.created_inds[s], t)
+        insert_right_point = bisect_right(self.created_inds[s], t)
+        insert_point = np.random.choice(np.arange(insert_left_point, insert_right_point+1))
+
         for r_prime in self.receiver_inds[s].keys():
             ii = self.receiver_inds[s][r_prime] >= insert_point
             self.receiver_inds[s][r_prime][ii] = self.receiver_inds[s][r_prime][ii] + 1
@@ -238,16 +299,16 @@ class HTEEM():
         self.table_counts[s].insert(insert_point, np.zeros(len(self.change_times) + 1))
         time_ind = bisect_right(self.change_times, t)
         self.table_counts[s][insert_point][time_ind] += 1
-        self.created_times[s].insert(insert_point, t)
+        self.created_inds[s].insert(insert_point, time_ind)
         self.sticks[s].insert(insert_point, np.ones(len(self.change_times) + 1) * np.random.beta(1, self.theta_s[s]))
         self.global_table_counts[r] += 1
 
         for s_temp in range(len(self.receiver_inds)):
             temp = np.sort(np.concatenate([l[:-1] for l in self.receiver_inds[s].values()]))
             assert (temp == np.arange(len(temp))).all()
-            assert len(temp) == len(self.created_times[s])
+            assert len(temp) == len(self.created_inds[s])
             assert len(temp) == len(self.table_counts[s])
-            assert np.all(np.diff(self.created_times[s_temp]) >= 0)
+            assert np.all(np.diff(self.created_inds[s_temp]) >= 0)
         try:
             assert np.all(np.diff(self.receiver_inds[s][r][:-1]) >= 0)
         except AssertionError:
@@ -258,9 +319,10 @@ class HTEEM():
     def _add_customer(self, t, s, r, cython_flag=True):
         if len(self.global_table_counts) == r:
             assert r == len(self.global_sticks)
+            #self.global_table_counts gets updated in insert_table
             self.global_table_counts = np.append(self.global_table_counts, [0])
             #self.global_table_counts[r] += 1
-            #This is noow wrong. Need to insert %after
+            #This is now wrong. Need to insert %after
             self.insert_table(t, s, r)
 
             #Draw global stick
@@ -283,17 +345,18 @@ class HTEEM():
 
 
     def get_unnormalized_probabilities(self, t, s, r):
-        max_point = bisect_right(self.created_times[s], t)
+        time_bin = bisect_right(self.change_times, t)
+        max_point = bisect_right(self.created_inds[s], time_bin)
         if max_point == 0:
             rec_probs = [1.0]
             rec_inds = []
             return  rec_probs, rec_inds
         
-        sticks, time_inds = zip(*[self.get_stick(s, i, t, return_index=True) for i in range(max_point)])
+        sticks = [self.get_stick(s, i, t) for i in range(max_point)]
         probs = np.concatenate([sticks, [1]])
         probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
         try:
-            max_rec_point = bisect_right([self.created_times[s][i] for i in self.receiver_inds[s][r][:-1]], t)
+            max_rec_point = bisect_right([self.created_inds[s][i] for i in self.receiver_inds[s][r][:-1]], time_bin)
             rec_probs = np.concatenate([probs[self.receiver_inds[s][r][:max_rec_point]], probs[-1:]])
         except IndexError:
             import pdb
@@ -303,38 +366,133 @@ class HTEEM():
         return rec_probs.tolist(), self.receiver_inds[s][r][:max_rec_point]
 
 
-    def get_stick(self, s, i, t, return_index=False):
-        if t < self.created_times[s][i]:
-            index = -1
+    def get_stick(self, s, table, t):
+        time_bin = bisect_right(self.change_times, t)
+        if time_bin < self.created_inds[s][table]:
             s = 1
         else:
-            index = bisect.bisect_right(self.change_times, t) - 1
-            s = self.sticks[s][i][index]
+            s = self.sticks[s][table][time_bin]
+        return s
+
+
+    def get_table_counts(self, s, table, t, return_index=False):
+        #change_ind = bisect_right(self.change_times, t)
+        #before_ind = self.get_last_switch(s, i, change_ind)
+        #after_ind = self.get_next_switch(s, i, before_ind)
+        time_bin = bisect_right(self.change_times, t)
+        if time_bin < self.created_inds[s][table]:
+            counts = 0
+        else:
+            before_ind = self.get_last_switch(s, table, time_bin)
+            after_ind = self.get_next_switch(s, table, time_bin)
+            counts = sum(self.table_counts[s][table][before_ind:after_ind])
 
         if return_index:
-            return s, index
+            return counts, index
         else:
-            return s
+            return counts
 
 
-    def get_table_counts(self, s, i, t, return_index=False):
-        if t < self.created_times[s][i]:
-            index = -1
-            s = 0
-        else:
-            index = bisect.bisect_right(self.change_times, t)
-            s = self.table_counts[s][i][index]
+    def delete_table(self, s, r, table, ind):
+        self.num_tables_in_s[s] -= 1
+        self.global_table_counts[r] -= 1
+        self.sticks[s] = self.sticks[s][:table] + self.sticks[s][table+1:]
+        self.table_counts[s] = self.table_counts[s][:table] +  self.table_counts[s][table+1:]
+        self.receiver_inds[s][r] = np.concatenate([self.receiver_inds[s][r][:ind],
+                                               self.receiver_inds[s][r][ind+1:]])
+        self.created_inds[s] = self.created_inds[s][:table] + self.created_inds[s][table+1:]
 
-        if return_index:
-            return s, index
-        else:
-            return s
+        #Removed the ind table - so all tables greater than ind+1 -> ind
+        for r in self.receiver_inds[s].keys():
+                    change = self.receiver_inds[s][r] > table
+                    self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
+
+    def move_table_back(self, s, old_table, new_table, ind):
+        #Pop the elements
+        assert old_table < new_table
+        self.table_counts[s].pop(old_table)
+        self.table_counts[s].insert(new_table)
+        self.sticks[s].pop(old_table)
+        self.sticks[s].insert(new_table)
+        self.created_inds[s].pop(old_table)
+        self.created_inds[s].insert(new_table)
+
+
+
+    def _remove_customer_new(self, t, s, r, cython_flag=True):
+        #Choose uniformly at random a customer to remove.
+        remove_probs = [self.get_table_counts(s, i, t) for i in self.receiver_inds[s][r][:-1]]
+        
+        ind = choice_discrete_unnormalized(remove_probs, np.random.rand())
+        
+        table = self.receiver_inds[s][r][ind]
+
+        time_ind = bisect.bisect_right(self.change_times, t)
+        self.table_counts[s][table][time_ind] -= 1
+        try:
+            assert self.table_counts[s][table][time_ind] >= 0
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+
+        if self.table_counts[s][table][time_ind] == 0:
+            #Check to see if the table has any counts at all
+            if sum(self.table_counts[s][table]) == 0:
+                self.delete_table(s, r, table, ind)
+                #Removed the ind table - so all tables greater than ind+1 -> ind
+                
+            else:
+                new_created_ind = next((i for i, x in enumerate(self.table_counts[s][table]) if x), None)
+                new_table = bisect_left(self.created_inds, new_created_ind)
+
+                #move the created_ind up to the next time we
+                #see a degree for this table
+                self.move_tables(s, table, new_table)
+                new_ind = bisect_left(self.receiver_inds[s][r][:-1], new_table)
+                self.receiver_inds[s][r].pop(ind)
+                self.receiver_inds[s][r].insert(new_ind, new_table)
+                
+                for r in self.receiver_inds[s].keys():
+                    change = (self.receiver_inds[s][r] > table) & (self.receiver_inds[s][r] <= new_table)
+                    self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
+
+                self.change_inds[s][new_table] = new_created_ind
+                self.sticks[s][new_table][:new_created_ind] = 1
+                
+
+        for s_temp in self.receiver_inds.keys():
+            temp = np.sort(np.concatenate([l[:-1] for l in self.receiver_inds[s_temp].values()]))
+            try:
+                assert (temp == np.arange(len(temp))).all()
+            except AssertionError:
+                import pdb
+                pdb.set_trace()
+
+            try:
+                assert len(temp) == len(self.created_inds[s_temp])
+            except AssertionError:
+                import pdb
+                pdb.set_trace()
+
+            try:
+                assert len(temp) == len(self.table_counts[s_temp])
+            except AssertionError:
+                import pdb
+                pdb.set_trace()
+            
+            
+            
+        try:
+            assert self.receiver_inds[s][ind][-1] == -1
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+        return True
 
 
     def _remove_customer(self, t, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
-        remove_probs, time_inds = zip(*[self.get_table_counts(s, i, t, return_index=True) 
-                                            for i in self.receiver_inds[s][r][:-1]])
+        remove_probs = [self.get_table_counts(s, i, t) for i in self.receiver_inds[s][r][:-1]]
 
         remove_probs = list(remove_probs)
         #Check to see if any of the tables were created at this time
@@ -361,9 +519,9 @@ class HTEEM():
         table = choice_discrete_unnormalized(remove_probs, np.random.rand())
         
         ind = self.receiver_inds[s][r][table]
-        self.table_counts[s][ind][time_inds[table]] -= 1
+        self.table_counts[s][ind][time_ind] -= 1
         try:
-            assert self.table_counts[s][ind][time_inds[table]] >= 0
+            assert self.table_counts[s][ind][time_ind] >= 0
         except AssertionError:
             import pdb
             pdb.set_trace()
@@ -447,7 +605,7 @@ class HTEEM():
                 pdb.set_trace()
 
             for i in range(len(self.table_counts[s])):
-                begin_ind = bisect_right(self.change_times, self.created_times[s][i])
+                begin_ind = self.created_inds[s][i]
                 degree_mats[s][i, begin_ind] -= 1
 
         for s in range(num_senders):
@@ -483,7 +641,7 @@ class HTEEM():
 
             for s in created_senders:
                 #Calculate log probs for all potential jumps, at the period BEFORE the jump
-                num_created_tables[s] = len([i for i in self.created_times[s] if i < ct])
+                num_created_tables[s] = len([i for i in self.created_inds[s] if i <= ind])
                 probs[s] = np.array([self.get_stick(s, i, ct - 1e-8) for i in range(num_created_tables[s])] + [1])
                 probs[s][1:] = probs[s][1:] * np.cumprod(1 - probs[s][:-1])
                 log_probs[s] = np.log(probs[s])
@@ -553,7 +711,7 @@ class HTEEM():
                 t_del = old_loc[1]
                 if s_del != -1:
                     if t_del < num_created_tables[s_del]:
-                        self.change_inds[s_del][t_del].remove(ind)
+                        self.table_change_inds[s_del][t_del].remove(ind)
                         # redraw the beta that we had deleted.
                         begin_ind = self.get_last_switch(s_del, t_del, ind)
                         end_ind = self.get_next_switch(s_del, t_del, ind)
@@ -576,8 +734,8 @@ class HTEEM():
 
                 else:
                     self.change_locations[ind] = (new_s, new_t)
-                    insert_ind = bisect_right(self.change_inds[new_s][new_t], ind)
-                    self.change_inds[new_s][new_t].insert(insert_ind, ind)
+                    insert_ind = bisect_right(self.table_change_inds[new_s][new_t], ind)
+                    self.table_change_inds[new_s][new_t].insert(insert_ind, ind)
                     # Draw the beta backward
                     begin_ind = self.get_last_switch(new_s, new_t, ind)
                     end_ind = self.get_next_switch(new_s, new_t, ind)
@@ -608,22 +766,22 @@ class HTEEM():
 
 
     def get_next_switch(self, s, i, ind):
-        after_ind = bisect_right(self.change_inds[s][i], ind)
-        if after_ind == len(self.change_inds[s][i]):
+        after_ind = bisect_right(self.table_change_inds[s][i], ind)
+        if after_ind == len(self.table_change_inds[s][i]):
             return None
-        return self.change_inds[s][i][after_ind]
+        return self.table_change_inds[s][i][after_ind]
         
 
     def get_last_switch(self, s, i, ind):
-        before_ind = bisect_left(self.change_inds[s][i], ind)
+        before_ind = bisect_left(self.table_change_inds[s][i], ind)
         if before_ind == 0:
             return 0
-        elif before_ind == len(self.change_inds[s][i]):
+        elif before_ind == len(self.table_change_inds[s][i]):
             before_ind = -1
 
-        return self.change_inds[s][i][before_ind] + 1
+        return self.table_change_inds[s][i][before_ind] + 1
             
 
     def draw_local_beta(self, d, s, theta):
-        return np.random.beta(1 + d, s + theta)
+        return np.random.beta(d + 1, s + theta)
 
