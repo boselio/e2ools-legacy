@@ -115,7 +115,7 @@ class HTEEM():
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
                     sample_parameters=True, update_alpha=False, update_theta=False,
                     update_interarrival_times=False, seed=None):
-    	np.random.seed(seed)
+        np.random.seed(seed)
         max_time = interactions[-1][0]
 
         if change_times is None:
@@ -161,8 +161,9 @@ class HTEEM():
                     update_alpha=True, update_theta=True, change_times=None, 
                     update_interarrival_times=True):   
 
+        self.current_save_dir = save_dir
         rc_func = partial(self.run_chain, num_times=num_iters_per_chain, 
-        				interactions=interactions,
+                        interactions=interactions,
                       change_times=change_times, update_alpha=update_alpha, update_theta=update_theta, 
                       update_interarrival_times=update_interarrival_times)
 
@@ -250,12 +251,8 @@ class HTEEM():
                 t, s, receivers = interactions[i]
                 for r in receivers:
                     #Remove a customer
-                    removed = self._remove_customer_new(t, s, r)
-                    if removed:
-                        #Add a customer
-                        #import pdb
-                        #pdb.set_trace()
-                        self._add_customer(t, s, r)
+                    self._remove_customer(t, s, r)
+                    self._add_customer(t, s, r)
 
         #Update local sticks
         #for s in self.sticks.keys():
@@ -280,9 +277,10 @@ class HTEEM():
 
 
     def insert_table(self, t, s, r):
+        time_bin = bisect_right(self.change_times, t)
         #Randomize?
-        insert_left_point = bisect_left(self.created_inds[s], t)
-        insert_right_point = bisect_right(self.created_inds[s], t)
+        insert_left_point = bisect_left(self.created_inds[s], time_bin)
+        insert_right_point = bisect_right(self.created_inds[s], time_bin)
         insert_point = np.random.choice(np.arange(insert_left_point, insert_right_point+1))
 
         for r_prime in self.receiver_inds[s].keys():
@@ -298,10 +296,10 @@ class HTEEM():
         self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], rec_insert_point, insert_point)
         self.num_tables_in_s[s] += 1
         self.table_counts[s].insert(insert_point, np.zeros(len(self.change_times) + 1))
-        time_ind = bisect_right(self.change_times, t)
-        self.table_counts[s][insert_point][time_ind] += 1
-        self.created_inds[s].insert(insert_point, time_ind)
+        self.table_counts[s][insert_point][time_bin] += 1
+        self.created_inds[s].insert(insert_point, time_bin)
         self.sticks[s].insert(insert_point, np.ones(len(self.change_times) + 1) * np.random.beta(1, self.theta_s[s]))
+        self.sticks[s][insert_point][:time_bin] = 1
         self.global_table_counts[r] += 1
 
         for s_temp in range(len(self.receiver_inds)):
@@ -349,6 +347,7 @@ class HTEEM():
         time_bin = bisect_right(self.change_times, t)
         max_point = bisect_right(self.created_inds[s], time_bin)
         if max_point == 0:
+            #No tables have been created at this time.
             rec_probs = [1.0]
             rec_inds = []
             return  rec_probs, rec_inds
@@ -358,7 +357,7 @@ class HTEEM():
         probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
         try:
             max_rec_point = bisect_right([self.created_inds[s][i] for i in self.receiver_inds[s][r][:-1]], time_bin)
-            rec_probs = np.concatenate([probs[self.receiver_inds[s][r][:max_rec_point]], probs[-1:]])
+            rec_probs = np.concatenate([probs[self.receiver_inds[s][r][:max_rec_point]], [probs[-1]]])
         except IndexError:
             import pdb
             pdb.set_trace()
@@ -370,13 +369,13 @@ class HTEEM():
     def get_stick(self, s, table, t):
         time_bin = bisect_right(self.change_times, t)
         if time_bin < self.created_inds[s][table]:
-            s = 1
+            stick = 1
         else:
-            s = self.sticks[s][table][time_bin]
-        return s
+            stick = self.sticks[s][table][time_bin]
+        return stick
 
 
-    def get_table_counts(self, s, table, t, return_index=False):
+    def get_table_counts(self, s, table, t):
         #change_ind = bisect_right(self.change_times, t)
         #before_ind = self.get_last_switch(s, i, change_ind)
         #after_ind = self.get_next_switch(s, i, before_ind)
@@ -388,10 +387,7 @@ class HTEEM():
             after_ind = self.get_next_switch(s, table, time_bin)
             counts = sum(self.table_counts[s][table][before_ind:after_ind])
 
-        if return_index:
-            return counts, index
-        else:
-            return counts
+        return counts
 
 
     def delete_table(self, s, r, table, ind):
@@ -399,14 +395,16 @@ class HTEEM():
         self.global_table_counts[r] -= 1
         self.sticks[s] = self.sticks[s][:table] + self.sticks[s][table+1:]
         self.table_counts[s] = self.table_counts[s][:table] +  self.table_counts[s][table+1:]
-        self.receiver_inds[s][r] = np.concatenate([self.receiver_inds[s][r][:ind],
-                                               self.receiver_inds[s][r][ind+1:]])
         self.created_inds[s] = self.created_inds[s][:table] + self.created_inds[s][table+1:]
 
+        self.receiver_inds[s][r] = np.concatenate([self.receiver_inds[s][r][:ind],
+                                               self.receiver_inds[s][r][ind+1:]])
+        
         #Removed the ind table - so all tables greater than ind+1 -> ind
         for r in self.receiver_inds[s].keys():
-                    change = self.receiver_inds[s][r] > table
-                    self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
+            change = self.receiver_inds[s][r] > table
+            self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
+
 
     def move_table_back(self, s, old_table, new_table, ind):
         #Pop the elements
@@ -420,7 +418,7 @@ class HTEEM():
 
 
 
-    def _remove_customer_new(self, t, s, r, cython_flag=True):
+    def _remove_customer(self, t, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
         remove_probs = [self.get_table_counts(s, i, t) for i in self.receiver_inds[s][r][:-1]]
         
@@ -430,6 +428,8 @@ class HTEEM():
 
         time_ind = bisect.bisect_right(self.change_times, t)
         self.table_counts[s][table][time_ind] -= 1
+        #import pdb
+        #pdb.set_trace()
         try:
             assert self.table_counts[s][table][time_ind] >= 0
         except AssertionError:
@@ -448,7 +448,7 @@ class HTEEM():
 
                 #move the created_ind up to the next time we
                 #see a degree for this table
-                self.move_tables(s, table, new_table)
+                self.move_table_back(s, table, new_table)
                 new_ind = bisect_left(self.receiver_inds[s][r][:-1], new_table)
                 self.receiver_inds[s][r].pop(ind)
                 self.receiver_inds[s][r].insert(new_ind, new_table)
@@ -488,10 +488,9 @@ class HTEEM():
         except AssertionError:
             import pdb
             pdb.set_trace()
-        return True
 
 
-    def _remove_customer(self, t, s, r, cython_flag=True):
+    def _remove_customer_old(self, t, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
         remove_probs = [self.get_table_counts(s, i, t) for i in self.receiver_inds[s][r][:-1]]
 
@@ -786,3 +785,17 @@ class HTEEM():
     def draw_local_beta(self, d, s, theta):
         return np.random.beta(d + 1, s + theta)
 
+
+    def read_files(self, save_dir=None, num_chains=4, num_iters_per_chain=500):
+        if save_dir is None:
+            save_dir = self.current_save_dir
+
+        save_dirs = [save_dir /  '{}'.format(i) for i in range(num_chains)]
+        param_dicts = []
+        for d in save_dirs:
+            for i in range(int(num_iters_per_chain / 2)):
+                save_path = d / '{}.pkl'.format(i)
+                with save_path.open('rb') as infile:
+                    param_dicts.append(pickle.load(infile))
+
+        return param_dicts
