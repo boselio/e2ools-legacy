@@ -24,12 +24,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set()
 from scipy.special import betaln, logsumexp
-
+import pathlib
 from concurrent.futures import ProcessPoolExecutor
 
 
 class HTEEM(): 
-    def __init__(self, save_dir, nu, alpha=None, theta=None, theta_s=None, 
+    def __init__(self, nu, alpha=None, theta=None, theta_s=None, 
                     num_chains=4, num_iters_per_chain=500, 
                     holdout=100, alpha_hyperparams=(5, 5),
                     theta_hyperparams=(10, 10), lower_alpha_hyperparams=(5,5),
@@ -114,8 +114,8 @@ class HTEEM():
 
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
                     sample_parameters=True, update_alpha=False, update_theta=False,
-                    update_interarrival_times=False):
-
+                    update_interarrival_times=False, seed=None):
+    	np.random.seed(seed)
         max_time = interactions[-1][0]
 
         if change_times is None:
@@ -157,11 +157,12 @@ class HTEEM():
             print(e_time - s_time)
 
 
-    def infer(self, interactions,  num_chains=4, num_iters_per_chain=500, 
+    def infer(self, save_dir, interactions, num_chains=4, num_iters_per_chain=500, 
                     update_alpha=True, update_theta=True, change_times=None, 
                     update_interarrival_times=True):   
 
-        rc_func = partial(run_chain, num_times=num_iters_per_chain, interactions=interactions,
+        rc_func = partial(self.run_chain, num_times=num_iters_per_chain, 
+        				interactions=interactions,
                       change_times=change_times, update_alpha=update_alpha, update_theta=update_theta, 
                       update_interarrival_times=update_interarrival_times)
 
