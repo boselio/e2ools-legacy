@@ -156,53 +156,6 @@ class HTEEM():
             e_time = time.time()
             print(e_time - s_time)
 
-
-    def infer(self, save_dir, interactions, num_chains=4, num_iters_per_chain=500, 
-                    update_alpha=True, update_theta=True, change_times=None, 
-                    update_interarrival_times=True):   
-
-        self.current_save_dir = save_dir
-        rc_func = partial(self.run_chain, num_times=num_iters_per_chain, 
-                        interactions=interactions,
-                      change_times=change_times, update_alpha=update_alpha, update_theta=update_theta, 
-                      update_interarrival_times=update_interarrival_times)
-
-        if not pathlib.Path(save_dir).is_dir():
-            pathlib.Path(save_dir).mkdir(parents=True)
-
-        if change_times is not None:
-            with (pathlib.Path(save_dir) / 'initial_change_times.pkl').open('wb') as outfile:
-                pickle.dump(change_times, outfile)
-            
-        save_dirs = [pathlib.Path(save_dir) / '{}'.format(i) 
-                     for i in range(num_chains)]
-
-        for sd in save_dirs:
-            if not sd.is_dir():
-                sd.mkdir(parents=True)
-
-        start_time = time.time()
-        print('Beginning Inference:')
-        tp_lists = []
-
-        with ProcessPoolExecutor() as executor:
-            for _ in executor.map(rc_func, save_dirs):
-                continue
-        end_time = time.time()
-
-        print('Took {} minutes.'.format((end_time - start_time) / 60))
-
-        #print('Calculating posterior estimates:')
-        #start_time = time.time()
-
-        #((upper_limits, lower_limits, means),
-        #(probs_ul, probs_ll, probs)) = get_limits_and_means_different_times(save_dir, num_chains, num_iters_per_chain)
-        #end_time = time.time()
-
-        #print('Took {} minutes.'.format((end_time - start_time) / 60))
-
-        return
-
     def _sample_table_configuration(self, interactions, initial=False):
 
         
@@ -243,6 +196,7 @@ class HTEEM():
                                         s_mats[s][table,:].sum(), self.theta_s[s])
                     self.sticks[s][table][begin_ind:] = new_stick
                     self.sticks[s][table][:begin_ind] = 1
+            #sample_ordering()
 
         else:
             interaction_inds = np.random.permutation(len(interactions))
@@ -253,6 +207,7 @@ class HTEEM():
                     #Remove a customer
                     self._remove_customer(t, s, r)
                     self._add_customer(t, s, r)
+            #sample_ordering()
 
         #Update local sticks
         #for s in self.sticks.keys():
@@ -276,6 +231,13 @@ class HTEEM():
         self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
 
 
+    def sample_ordering(self, time_ind):
+        for s, table_sticks in self.sticks.items():
+            table_probs = np.array([ts[time_ind] for ts in table_sticks])
+            table_probs = np.concatenate([table_probs, [1]])
+            table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
+        #For now, just do them all
+
     def insert_table(self, t, s, r):
         time_bin = bisect_right(self.change_times, t)
         #Randomize?
@@ -283,6 +245,7 @@ class HTEEM():
         insert_right_point = bisect_right(self.created_inds[s], time_bin)
         insert_point = np.random.choice(np.arange(insert_left_point, insert_right_point+1))
 
+        insert_point = insert_right_point
         for r_prime in self.receiver_inds[s].keys():
             ii = self.receiver_inds[s][r_prime] >= insert_point
             self.receiver_inds[s][r_prime][ii] = self.receiver_inds[s][r_prime][ii] + 1
@@ -799,3 +762,54 @@ class HTEEM():
                     param_dicts.append(pickle.load(infile))
 
         return param_dicts
+
+
+def instantiate_and_run():
+    pass
+
+
+def infer(save_dir, interactions, num_chains=4, num_iters_per_chain=500, 
+                update_alpha=True, update_theta=True, change_times=None, 
+                update_interarrival_times=True):   
+
+    self.current_save_dir = save_dir
+    rc_func = partial(self.run_chain, num_times=num_iters_per_chain, 
+                    interactions=interactions,
+                  change_times=change_times, update_alpha=update_alpha, update_theta=update_theta, 
+                  update_interarrival_times=update_interarrival_times)
+
+    if not pathlib.Path(save_dir).is_dir():
+        pathlib.Path(save_dir).mkdir(parents=True)
+
+    if change_times is not None:
+        with (pathlib.Path(save_dir) / 'initial_change_times.pkl').open('wb') as outfile:
+            pickle.dump(change_times, outfile)
+        
+    save_dirs = [pathlib.Path(save_dir) / '{}'.format(i) 
+                 for i in range(num_chains)]
+
+    for sd in save_dirs:
+        if not sd.is_dir():
+            sd.mkdir(parents=True)
+
+    start_time = time.time()
+    print('Beginning Inference:')
+    tp_lists = []
+
+    with ProcessPoolExecutor() as executor:
+        for _ in executor.map(rc_func, save_dirs):
+            continue
+    end_time = time.time()
+
+    print('Took {} minutes.'.format((end_time - start_time) / 60))
+
+    #print('Calculating posterior estimates:')
+    #start_time = time.time()
+
+    #((upper_limits, lower_limits, means),
+    #(probs_ul, probs_ll, probs)) = get_limits_and_means_different_times(save_dir, num_chains, num_iters_per_chain)
+    #end_time = time.time()
+
+    #print('Took {} minutes.'.format((end_time - start_time) / 60))
+
+    return
