@@ -129,10 +129,13 @@ class HTEEM():
 
         self.initialize_state(interactions, change_times)
 
-        
+        s_time = time.time()
         for t in range(num_times):
-            s_time = time.time()
-            print(t)
+            
+            if t % 50 == 0:
+                e_time = time.time()
+                print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
+                s_time = time.time()
 
             self._sample_table_configuration(interactions)
             self._sample_jump_locations(interactions)
@@ -153,8 +156,7 @@ class HTEEM():
                 with file_dir.open('wb') as outfile:
                     pickle.dump(params, outfile)
 
-            e_time = time.time()
-            print(e_time - s_time)
+            
 
     def _sample_table_configuration(self, interactions, initial=False):
 
