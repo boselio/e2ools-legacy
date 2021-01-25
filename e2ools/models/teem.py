@@ -42,22 +42,6 @@ class TemporalProbabilities():
 
         return x, y
 
-    def get_receiver_probability_trace(self, r, upper_limit):
-        print("This is probably broken. Don't Use!")
-        # Times to test
-        x = []
-        for i in range(r + 1):
-            x.extend(self.arrival_times_dict[i])
-        x.sort()
-        y = np.array([self.get_probability(r, t) for t in x])
-
-
-        x = np.repeat(x, 2)[1:]
-        x = np.concatenate([x, [upper_limit]])
-        y = np.repeat(y, 2)
-
-        return x, y
-
     def get_probability_traces(self):
         times = [t for v in self.arrival_times_dict.values() for t in v]
         times = np.array(times)
@@ -85,7 +69,7 @@ class TemporalProbabilities():
             index = -1
             s = 1
         else:
-            index = bisect.bisect_left(self.arrival_times_dict[r], t) - 1
+            index = bisect.bisect_right(self.arrival_times_dict[r], t) - 1
             s = self.stick_dict[r][index]
 
         if return_index:

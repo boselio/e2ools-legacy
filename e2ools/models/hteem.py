@@ -744,13 +744,13 @@ class HTEEM():
                     self.sticks[new_s][new_t][begin_ind:ind+1] = new_stick
 
         for s in range(num_senders):
-            for t in range(len(self.table_counts[s])):
+            for table in range(len(self.table_counts[s])):
                 #draw beta
-                end_ind = self.get_next_switch(s, t, 0)
+                end_ind = self.get_next_switch(s, table, 0)
 
-                new_stick = self.draw_local_beta(degree_mats[s][t,:end_ind].sum(),
-                                        s_mats[s][t,:end_ind].sum(), self.theta_s[s])
-                self.sticks[s][t][:end_ind] = new_stick
+                new_stick = self.draw_local_beta(degree_mats[s][table,:end_ind].sum(),
+                                        s_mats[s][table,:end_ind].sum(), self.theta_s[s])
+                self.sticks[s][table][:end_ind] = new_stick
 
         return 
 

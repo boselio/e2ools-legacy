@@ -135,7 +135,10 @@ class HSTICKS():
                     self._add_customer(s, r)
 
         else:
-            for t, s, interaction in interactions:
+            interaction_inds = np.random.permutation(len(interactions))
+            #for t, s, interaction in interactions:
+            for i in interaction_inds:
+                t, s, interaction = interactions[i]
                 for r in interaction:
                     #Remove a customer
                     self._remove_customer(s, r)
