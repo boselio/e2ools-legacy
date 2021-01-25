@@ -158,7 +158,8 @@ class HTEEM():
 
     def _sample_table_configuration(self, interactions, initial=False):
 
-        
+        #import pdb
+        #pdb.set_trace()
         if initial:
             for t, s, receivers in interactions:
                 #import pdb
@@ -173,6 +174,7 @@ class HTEEM():
             #table_inds = {}
             #counter = 0
 
+            self.sample_ordering()
             num_senders = len(self.created_sender_times)
 
             for s in range(len(self.table_counts)):
@@ -196,7 +198,7 @@ class HTEEM():
                                         s_mats[s][table,:].sum(), self.theta_s[s])
                     self.sticks[s][table][begin_ind:] = new_stick
                     self.sticks[s][table][:begin_ind] = 1
-            #sample_ordering()
+            #
 
         else:
             interaction_inds = np.random.permutation(len(interactions))
@@ -207,6 +209,8 @@ class HTEEM():
                     #Remove a customer
                     self._remove_customer(t, s, r)
                     self._add_customer(t, s, r)
+
+            self.sample_ordering()
             #sample_ordering()
 
         #Update local sticks
@@ -231,11 +235,32 @@ class HTEEM():
         self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
 
 
-    def sample_ordering(self, time_ind):
+    def sample_ordering(self, time_ind=0):
         for s, table_sticks in self.sticks.items():
+            table_order = []
             table_probs = np.array([ts[time_ind] for ts in table_sticks])
-            table_probs = np.concatenate([table_probs, [1]])
+            #table_probs = np.concatenate([table_probs, [1]])
             table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
+            table_probs = table_probs.tolist()
+            tables = list(range(len(self.table_counts[s])))
+            new_placement_dict = {}
+            for new_table_ind in range(len(tables)):
+                old_table_ind = choice_discrete_unnormalized(table_probs, np.random.rand())
+                new_placement_dict[tables[old_table_ind]] = new_table_ind
+                tables.pop(old_table_ind)
+                table_probs.pop(old_table_ind)
+
+            new_placement_dict[-1] = -1
+            reverse_new_placements = {v: k for k, v in new_placement_dict.items()}
+            tables = list(range(len(self.table_counts[s])))
+            self.sticks[s] = [self.sticks[s][reverse_new_placements[t]] for t in tables]
+            for r in self.receiver_inds[s].keys():
+                self.receiver_inds[s][r] = np.array([new_placement_dict[t] for t in self.receiver_inds[s][r]])
+                self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
+            #self.table_change_inds 
+            #self.change_locations
+            self.table_counts[s] = [self.table_counts[s][reverse_new_placements[t]] for t in tables]
+            #self.created_inds = 
         #For now, just do them all
 
     def insert_table(self, t, s, r):
@@ -348,6 +373,8 @@ class HTEEM():
         else:
             before_ind = self.get_last_switch(s, table, time_bin)
             after_ind = self.get_next_switch(s, table, time_bin)
+            #import pdb
+            #pdb.set_trace()
             counts = sum(self.table_counts[s][table][before_ind:after_ind])
 
         return counts
@@ -383,7 +410,7 @@ class HTEEM():
 
     def _remove_customer(self, t, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
-        remove_probs = [self.get_table_counts(s, i, t) for i in self.receiver_inds[s][r][:-1]]
+        remove_probs = [self.get_table_counts(s, table, t) for table in self.receiver_inds[s][r][:-1]]
         
         ind = choice_discrete_unnormalized(remove_probs, np.random.rand())
         
