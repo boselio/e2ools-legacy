@@ -132,10 +132,10 @@ class HTEEM():
         s_time = time.time()
         for t in range(num_times):
             
-            if t % 50 == 0:
-                e_time = time.time()
-                print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
-                s_time = time.time()
+            #if t % 50 == 0:
+            #    e_time = time.time()
+            #    print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
+            #    s_time = time.time()
 
             self._sample_table_configuration(interactions)
             self._sample_jump_locations(interactions)
