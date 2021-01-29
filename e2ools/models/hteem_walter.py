@@ -28,6 +28,16 @@ import pathlib
 from concurrent.futures import ProcessPoolExecutor
 
 
+def dd_list():
+    return defaultdict(list)
+
+def df_rec_inds1():
+    return np.array([-1], dtype='int')
+
+def df_rec_inds2():
+    return defaultdict(df_rec_inds1)
+
+
 class HTEEM(): 
     def __init__(self, nu, alpha=None, theta=None, theta_s=None, 
                     num_chains=4, num_iters_per_chain=500, 
@@ -57,11 +67,12 @@ class HTEEM():
         #The locations that are sampled for each change time.
         self.change_locations = [(-1, -1) for _ in self.change_times]
         #indices of changes, per sender and per table
-        self.table_change_inds = defaultdict(lambda: defaultdict(list))
+
+        self.table_change_inds = defaultdict(dd_list)
         #Number of tables in each restaurant
         self.num_tables_in_s = defaultdict(int)
         #The inds that are for a particular receiver, in addition to the new table probability.
-        self.receiver_inds = defaultdict(lambda: defaultdict(lambda: np.array([-1], dtype='int')))
+        self.receiver_inds = defaultdict(df_rec_inds2)
 
         #For temporal version, table counts now must be list of lists (or arrays)
         #with each entry of the lower list corresponding to the tables counts at
@@ -111,7 +122,6 @@ class HTEEM():
         self._sample_table_configuration(interactions, initial=True)
 
 
-
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
                     sample_parameters=True, update_alpha=False, update_theta=False,
                     update_interarrival_times=False, seed=None):
@@ -156,7 +166,6 @@ class HTEEM():
                 with file_dir.open('wb') as outfile:
                     pickle.dump(params, outfile)
 
-            
 
     def _sample_table_configuration(self, interactions, initial=False):
 
@@ -266,6 +275,7 @@ class HTEEM():
             #self.created_inds = 
         #For now, just do them all
 
+
     def insert_table(self, t, s, r):
         time_bin = bisect_right(self.change_times, t)
         #Randomize?
@@ -333,7 +343,6 @@ class HTEEM():
             self.table_counts[s][table][time_ind] += 1
 
 
-
     def get_unnormalized_probabilities(self, t, s, r):
         time_bin = bisect_right(self.change_times, t)
         max_point = bisect_right(self.created_inds[s], time_bin)
@@ -381,6 +390,7 @@ class HTEEM():
             counts = sum(self.table_counts[s][table][before_ind:after_ind])
 
         return counts
+
 
     def remove_empty_tables(self):
         for s in self.table_counts.keys():
@@ -676,28 +686,40 @@ class HTEEM():
         return param_dicts
 
 
-def instantiate_and_run():
-    pass
+def instantiate_and_run(save_dir, interactions, nu=None, alpha=None, theta=None, theta_local=None,
+                        num_iters=500, update_alpha=True, update_theta=True,
+                        update_theta_local=True, update_interarrival_times=True,
+                        change_times=None):
+    np.random.seed()
+    he2 = HTEEM(nu, alpha=alpha, theta=theta, theta_s=theta_local)
+    he2.run_chain(save_dir, num_iters, interactions, change_times,
+                    sample_parameters=False, update_alpha=False,
+                    update_theta=False, update_interarrival_times=False,
+                    seed=None)
+    
+    return
 
 
-def infer(save_dir, interactions, num_chains=4, num_iters_per_chain=500, 
-                update_alpha=True, update_theta=True, change_times=None, 
+def infer(master_save_dir, interactions, nu=None, num_chains=4, num_iters_per_chain=500, 
+                alpha=None, theta=None, theta_local=None, update_alpha=True, 
+                update_theta=True, update_theta_local=True, change_times=None, 
                 update_interarrival_times=True):   
 
-    self.current_save_dir = save_dir
-    rc_func = partial(self.run_chain, num_times=num_iters_per_chain, 
-                    interactions=interactions,
-                  change_times=change_times, update_alpha=update_alpha, update_theta=update_theta, 
-                  update_interarrival_times=update_interarrival_times)
 
-    if not pathlib.Path(save_dir).is_dir():
-        pathlib.Path(save_dir).mkdir(parents=True)
+    rc_func = partial(instantiate_and_run, nu=nu, num_iters=num_iters_per_chain, 
+                    interactions=interactions, alpha=alpha, theta=theta, theta_local=theta_local,
+                    update_theta=update_theta, update_alpha=update_alpha, update_theta_local=update_theta_local,
+                  change_times=change_times, update_interarrival_times=update_interarrival_times)
+
+    if not pathlib.Path(master_save_dir).is_dir():
+        pathlib.Path(master_save_dir).mkdir(parents=True)
+
 
     if change_times is not None:
-        with (pathlib.Path(save_dir) / 'initial_change_times.pkl').open('wb') as outfile:
+        with (pathlib.Path(master_save_dir) / 'initial_change_times.pkl').open('wb') as outfile:
             pickle.dump(change_times, outfile)
         
-    save_dirs = [pathlib.Path(save_dir) / '{}'.format(i) 
+    save_dirs = [pathlib.Path(master_save_dir) / '{}'.format(i) 
                  for i in range(num_chains)]
 
     for sd in save_dirs:
@@ -714,6 +736,7 @@ def infer(save_dir, interactions, num_chains=4, num_iters_per_chain=500,
     end_time = time.time()
 
     print('Took {} minutes.'.format((end_time - start_time) / 60))
+
 
     #print('Calculating posterior estimates:')
     #start_time = time.time()
