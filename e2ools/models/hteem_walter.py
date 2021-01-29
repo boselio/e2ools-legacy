@@ -132,10 +132,10 @@ class HTEEM():
         s_time = time.time()
         for t in range(num_times):
             
-            if t % 50 == 0:
-                e_time = time.time()
-                print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
-                s_time = time.time()
+            #if t % 50 == 0:
+            #    e_time = time.time()
+            #    print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
+            #    s_time = time.time()
 
             self._sample_table_configuration(interactions)
             self._sample_jump_locations(interactions)
@@ -273,7 +273,7 @@ class HTEEM():
         insert_right_point = bisect_right(self.created_inds[s], time_bin)
         insert_point = np.random.choice(np.arange(insert_left_point, insert_right_point+1))
 
-        insert_point = insert_left_point
+        insert_point = insert_right_point
         for r_prime in self.receiver_inds[s].keys():
             ii = self.receiver_inds[s][r_prime] >= insert_point
             self.receiver_inds[s][r_prime][ii] = self.receiver_inds[s][r_prime][ii] + 1
