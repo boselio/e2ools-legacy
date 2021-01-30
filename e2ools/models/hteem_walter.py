@@ -184,6 +184,8 @@ class HTEEM():
             #beta_mat = np.zeros((num_tables, len(change_times) + 1))
             #table_inds = {}
             #counter = 0
+            #import pdb
+            #pdb.set_trace()
 
             self.sample_ordering()
             num_senders = len(self.created_sender_times)
@@ -250,6 +252,7 @@ class HTEEM():
     def sample_ordering(self):
         #Need to resample the ordering, but keeping the created inds in tact.
         for s, table_sticks in self.sticks.items():
+            new_placement_dict = {}
             for time_ind in range(len(self.change_times) + 1):
                 table_order = []
                 table_probs = np.array([ts[time_ind] for ts in table_sticks])
@@ -259,23 +262,24 @@ class HTEEM():
                 table_probs = list(table_probs)
                 tables = list(tables)
             #tables = list(range(len(self.table_counts[s])))
-                new_placement_dict = {}
+                
                 for new_table_ind in range(len(tables)):
                     old_table_ind = choice_discrete_unnormalized(table_probs, np.random.rand())
                     new_placement_dict[tables[old_table_ind]] = new_table_ind
                     tables.pop(old_table_ind)
                     table_probs.pop(old_table_ind)
 
-                new_placement_dict[-1] = -1
-                reverse_new_placements = {v: k for k, v in new_placement_dict.items()}
-                tables = list(range(len(self.table_counts[s])))
-                self.sticks[s] = [self.sticks[s][reverse_new_placements[t]] for t in tables]
-                for r in self.receiver_inds[s].keys():
-                    self.receiver_inds[s][r] = np.array([new_placement_dict[t] for t in self.receiver_inds[s][r]])
-                    self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
+
+            new_placement_dict[-1] = -1
+            reverse_new_placements = {v: k for k, v in new_placement_dict.items()}
+            tables = list(range(len(self.table_counts[s])))
+            self.sticks[s] = [self.sticks[s][reverse_new_placements[t]] for t in tables]
+            for r in self.receiver_inds[s].keys():
+                self.receiver_inds[s][r] = np.array([new_placement_dict[t] for t in self.receiver_inds[s][r]])
+                self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
             #self.table_change_inds 
             #self.change_locations
-                self.table_counts[s] = [self.table_counts[s][reverse_new_placements[t]] for t in tables]
+            self.table_counts[s] = [self.table_counts[s][reverse_new_placements[t]] for t in tables]
             #self.created_inds = 
         #For now, just do them all
 
@@ -398,9 +402,10 @@ class HTEEM():
 
     def remove_empty_tables(self):
         for s in self.table_counts.keys():
-            for time_ind in range(len(self.change_inds) + 1):
+            for time_ind in range(len(self.change_times) + 1):
                 empty_tables = np.array(np.where(np.array(self.created_inds[s]) == time_ind)[0])
-                empty_tables = np.where(np.array([self.table_counts[s][r][time_ind] for r in empty_tables]) == 0)
+                empty_tables = np.where(np.array([self.table_counts[s][r][time_ind] 
+                                                for r in empty_tables]) == 0)[0]
 
                 for e_t in empty_tables:
                     for r, inds in self.receiver_inds[s].items():
