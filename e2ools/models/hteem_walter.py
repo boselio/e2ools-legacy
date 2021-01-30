@@ -247,31 +247,35 @@ class HTEEM():
         self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
 
 
-    def sample_ordering(self, time_ind=0):
+    def sample_ordering(self):
+        #Need to resample the ordering, but keeping the created inds in tact.
         for s, table_sticks in self.sticks.items():
-            table_order = []
-            table_probs = np.array([ts[time_ind] for ts in table_sticks])
-            #table_probs = np.concatenate([table_probs, [1]])
-            table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
-            table_probs = table_probs.tolist()
-            tables = list(range(len(self.table_counts[s])))
-            new_placement_dict = {}
-            for new_table_ind in range(len(tables)):
-                old_table_ind = choice_discrete_unnormalized(table_probs, np.random.rand())
-                new_placement_dict[tables[old_table_ind]] = new_table_ind
-                tables.pop(old_table_ind)
-                table_probs.pop(old_table_ind)
+            for time_ind in range(len(self.change_times) + 1):
+                table_order = []
+                table_probs = np.array([ts[time_ind] for ts in table_sticks])
+                #table_probs = np.concatenate([table_probs, [1]])
+                table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
+                table_probs, tables = zip(*[(t, i) for i, t in enumerate(table_probs.tolist()) if self.created_inds[s][i] == time_ind])
+                table_probs = list(table_probs)
+                tables = list(tables)
+            #tables = list(range(len(self.table_counts[s])))
+                new_placement_dict = {}
+                for new_table_ind in range(len(tables)):
+                    old_table_ind = choice_discrete_unnormalized(table_probs, np.random.rand())
+                    new_placement_dict[tables[old_table_ind]] = new_table_ind
+                    tables.pop(old_table_ind)
+                    table_probs.pop(old_table_ind)
 
-            new_placement_dict[-1] = -1
-            reverse_new_placements = {v: k for k, v in new_placement_dict.items()}
-            tables = list(range(len(self.table_counts[s])))
-            self.sticks[s] = [self.sticks[s][reverse_new_placements[t]] for t in tables]
-            for r in self.receiver_inds[s].keys():
-                self.receiver_inds[s][r] = np.array([new_placement_dict[t] for t in self.receiver_inds[s][r]])
-                self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
+                new_placement_dict[-1] = -1
+                reverse_new_placements = {v: k for k, v in new_placement_dict.items()}
+                tables = list(range(len(self.table_counts[s])))
+                self.sticks[s] = [self.sticks[s][reverse_new_placements[t]] for t in tables]
+                for r in self.receiver_inds[s].keys():
+                    self.receiver_inds[s][r] = np.array([new_placement_dict[t] for t in self.receiver_inds[s][r]])
+                    self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
             #self.table_change_inds 
             #self.change_locations
-            self.table_counts[s] = [self.table_counts[s][reverse_new_placements[t]] for t in tables]
+                self.table_counts[s] = [self.table_counts[s][reverse_new_placements[t]] for t in tables]
             #self.created_inds = 
         #For now, just do them all
 
@@ -394,18 +398,40 @@ class HTEEM():
 
     def remove_empty_tables(self):
         for s in self.table_counts.keys():
-            empty_tables = np.where(np.array([c[0] for c in self.table_counts[s]]) == 0)[0]
-            for e_t in empty_tables:
-                for r, inds in self.receiver_inds[s].items():
-                    inds = np.flatnonzero(inds == e_t)
-                    if len(inds) > 0:
-                        ind = inds[0]
-                        break
-                else:
-                    import pdb
-                    pdb.set_trace()
-                self.delete_table(s, r, e_t, ind)
-                empty_tables[empty_tables > e_t] -= 1
+            for time_ind in range(len(self.change_inds) + 1):
+                empty_tables = np.array(np.where(np.array(self.created_inds[s]) == time_ind)[0])
+                empty_tables = np.where(np.array([self.table_counts[s][r][time_ind] for r in empty_tables]) == 0)
+
+                for e_t in empty_tables:
+                    for r, inds in self.receiver_inds[s].items():
+                        inds = np.flatnonzero(inds == e_t)
+                        if len(inds) > 0:
+                            ind = inds[0]
+                            break
+                    else:
+                        import pdb
+                        pdb.set_trace()
+                    if sum(self.table_counts[s][e_t]) == 0:
+                        self.delete_table(s, r, e_t, ind)
+                        empty_tables[empty_tables > e_t] -= 1
+                    else:
+                        #move back the table
+                        new_created_ind = next((i for i, x in enumerate(self.table_counts[s][e_t]) if x), None)
+                        new_table = bisect_right(self.created_inds[s], new_created_ind)
+
+                        #move the created_ind up to the next time we
+                        #see a degree for this table
+                        self.move_table_back(s, table, new_table)
+                        new_ind = bisect_right(self.receiver_inds[s][r][:-1], new_table)
+                        self.receiver_inds[s][r].pop(ind)
+                        self.receiver_inds[s][r].insert(new_ind, new_table)
+                
+                        for r in self.receiver_inds[s].keys():
+                            change = (self.receiver_inds[s][r] > table) & (self.receiver_inds[s][r] <= new_table)
+                            self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
+
+                        self.change_inds[s][new_table] = new_created_ind
+                        self.sticks[s][new_table][:new_created_ind] = 1
 
 
     def delete_table(self, s, r, table, ind):
@@ -424,7 +450,7 @@ class HTEEM():
             self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
 
 
-    def move_table_back(self, s, old_table, new_table, ind):
+    def move_table_back(self, s, old_table, new_table):
         #Pop the elements
         assert old_table < new_table
         self.table_counts[s].pop(old_table)
@@ -671,19 +697,17 @@ class HTEEM():
         return np.random.beta(d + 1, s + theta)
 
 
-    def read_files(self, save_dir=None, num_chains=4, num_iters_per_chain=500):
-        if save_dir is None:
-            save_dir = self.current_save_dir
+def read_files(save_dir=None, num_chains=4, num_iters_per_chain=500):
 
-        save_dirs = [save_dir /  '{}'.format(i) for i in range(num_chains)]
-        param_dicts = []
-        for d in save_dirs:
-            for i in range(int(num_iters_per_chain / 2)):
-                save_path = d / '{}.pkl'.format(i)
-                with save_path.open('rb') as infile:
-                    param_dicts.append(pickle.load(infile))
+    save_dirs = [save_dir /  '{}'.format(i) for i in range(num_chains)]
+    param_dicts = []
+    for d in save_dirs:
+        for i in range(int(num_iters_per_chain / 2)):
+            save_path = d / '{}.pkl'.format(i)
+            with save_path.open('rb') as infile:
+                param_dicts.append(pickle.load(infile))
 
-        return param_dicts
+    return param_dicts
 
 
 def instantiate_and_run(save_dir, interactions, nu=None, alpha=None, theta=None, theta_local=None,
