@@ -124,7 +124,7 @@ class HTEEM():
 
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
                     sample_parameters=True, update_alpha=False, update_theta=False,
-                    update_interarrival_times=False, seed=None):
+                    update_interarrival_times=False, seed=None, debug_fixed_loc=False):
         np.random.seed(seed)
         max_time = interactions[-1][0]
 
@@ -148,7 +148,7 @@ class HTEEM():
             #    s_time = time.time()
 
             self._sample_table_configuration(interactions)
-            self._sample_jump_locations(interactions)
+            self._sample_jump_locations(interactions, debug_fixed_locations=debug_fixed_loc)
 
             params = {'alpha': self.alpha, 'theta': self.theta,
                         'theta_s': self.theta_s,
@@ -251,24 +251,29 @@ class HTEEM():
 
     def sample_ordering(self):
         #Need to resample the ordering, but keeping the created inds in tact.
+        #Also, need to sample so that the 0's go first, 1's go second, etc.
+        
         for s, table_sticks in self.sticks.items():
             new_placement_dict = {}
+            table_indicator = 0
             for time_ind in range(len(self.change_times) + 1):
                 table_order = []
                 table_probs = np.array([ts[time_ind] for ts in table_sticks])
                 #table_probs = np.concatenate([table_probs, [1]])
                 table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
-                table_probs, tables = zip(*[(t, i) for i, t in enumerate(table_probs.tolist()) if self.created_inds[s][i] == time_ind])
+                table_probs, tables = zip(*[(t, i) for i, t in enumerate(table_probs.tolist()) if 
+                                                                self.created_inds[s][i] == time_ind])
                 table_probs = list(table_probs)
                 tables = list(tables)
+                num_tables_sampled = len(tables)
             #tables = list(range(len(self.table_counts[s])))
-                
-                for new_table_ind in range(len(tables)):
+                for new_table_ind in range(num_tables_sampled):
                     old_table_ind = choice_discrete_unnormalized(table_probs, np.random.rand())
-                    new_placement_dict[tables[old_table_ind]] = new_table_ind
+                    new_placement_dict[tables[old_table_ind]] = new_table_ind + table_indicator
                     tables.pop(old_table_ind)
                     table_probs.pop(old_table_ind)
 
+                table_indicator += num_tables_sampled
 
             new_placement_dict[-1] = -1
             reverse_new_placements = {v: k for k, v in new_placement_dict.items()}
@@ -391,16 +396,19 @@ class HTEEM():
         if time_bin < self.created_inds[s][table]:
             counts = 0
         else:
-            before_ind = self.get_last_switch(s, table, time_bin)
-            after_ind = self.get_next_switch(s, table, time_bin)
+            #before_ind = self.get_last_switch(s, table, time_bin)
+            #after_ind = self.get_next_switch(s, table, time_bin)
             #import pdb
             #pdb.set_trace()
-            counts = sum(self.table_counts[s][table][before_ind:after_ind])
+            #counts = sum(self.table_counts[s][table][before_ind:after_ind])
+            counts = self.table_counts[s][table][time_bin]
 
         return counts
 
 
     def remove_empty_tables(self):
+        #import pdb
+        #pdb.set_trace()
         for s in self.table_counts.keys():
             for time_ind in range(len(self.change_times) + 1):
                 empty_tables = np.array(np.where(np.array(self.created_inds[s]) == time_ind)[0])
@@ -421,21 +429,25 @@ class HTEEM():
                         empty_tables[empty_tables > e_t] -= 1
                     else:
                         #move back the table
+                        #import pdb
+                        #pdb.set_trace()
                         new_created_ind = next((i for i, x in enumerate(self.table_counts[s][e_t]) if x), None)
-                        new_table = bisect_right(self.created_inds[s], new_created_ind)
+                        #new table in minus 1 because we will be deleting the table behind and moving it forward.
+                        new_table = bisect_right(self.created_inds[s], new_created_ind) - 1
 
                         #move the created_ind up to the next time we
                         #see a degree for this table
-                        self.move_table_back(s, table, new_table)
-                        new_ind = bisect_right(self.receiver_inds[s][r][:-1], new_table)
-                        self.receiver_inds[s][r].pop(ind)
-                        self.receiver_inds[s][r].insert(new_ind, new_table)
+                        self.move_table_back(s, e_t, new_table)
+                        new_ind = bisect_right(self.receiver_inds[s][r][:-1], new_table) - 1
+
+                        self.receiver_inds[s][r][ind:new_ind] = self.receiver_inds[s][r][ind+1:new_ind+1]
+                        self.receiver_inds[s][r][new_ind] = new_table
                 
                         for r in self.receiver_inds[s].keys():
-                            change = (self.receiver_inds[s][r] > table) & (self.receiver_inds[s][r] <= new_table)
+                            change = (self.receiver_inds[s][r] > e_t) & (self.receiver_inds[s][r] <= new_table)
                             self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
 
-                        self.change_inds[s][new_table] = new_created_ind
+                        self.created_inds[s][new_table] = new_created_ind
                         self.sticks[s][new_table][:new_created_ind] = 1
 
 
@@ -458,12 +470,12 @@ class HTEEM():
     def move_table_back(self, s, old_table, new_table):
         #Pop the elements
         assert old_table < new_table
-        self.table_counts[s].pop(old_table)
-        self.table_counts[s].insert(new_table)
-        self.sticks[s].pop(old_table)
-        self.sticks[s].insert(new_table)
-        self.created_inds[s].pop(old_table)
-        self.created_inds[s].insert(new_table)
+        tc_list = self.table_counts[s].pop(old_table)
+        self.table_counts[s].insert(new_table, tc_list)
+        s_list = self.sticks[s].pop(old_table)
+        self.sticks[s].insert(new_table, s_list)
+        ct = self.created_inds[s].pop(old_table)
+        self.created_inds[s].insert(new_table, ct)
 
 
     def _remove_customer(self, t, s, r, cython_flag=True):
@@ -485,7 +497,7 @@ class HTEEM():
             pdb.set_trace()
 
 
-    def _sample_jump_locations(self, interactions):
+    def _sample_jump_locations(self, interactions, debug_fixed_locations=False):
 
         num_tables = sum([len(v) for k, v in self.table_counts.items()])
 
@@ -599,6 +611,10 @@ class HTEEM():
             #    new_t = new_ind - temp[new_s - 1]
 
             new_choice = (new_s, new_t)
+
+            #Delete this next section of code for production:
+            if debug_fixed_locations:
+                new_choice = old_locs[ind]
 
             if (new_choice[0] == old_locs[ind][0]) and (new_choice[1] == old_locs[ind][1]):
                 if new_choice[1] == num_created_tables[new_s]:
