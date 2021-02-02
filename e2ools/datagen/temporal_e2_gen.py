@@ -1,9 +1,11 @@
 import numpy as np
 from ..models.teem import TemporalProbabilities
+from pathlib import Path
 
-def save_interactions(interactions, file_name):
+def save_interactions(interactions, file_path):
 
-    with open(file_name, 'w') as outfile:
+    file_path = Path(file_path)
+    with file_path.open('w') as outfile:
         for interaction in interactions:
             outline = '{} '.format(interaction[0])
             outline += ' '.join([str(i) for i in interactions[1]])
@@ -29,7 +31,106 @@ def draw_stick(alpha, theta, i):
     return np.random.beta(1 - alpha, theta + alpha * i)
 
 
-def create_temporal_e2_data(alpha=0.1, theta=10, num_interactions=1000, delta=10, nu=1, max_receivers=20,
+
+
+
+def create_temporal_e2_data(alpha=0.1, theta=10, num_interactions=1000, delta=10, nu=1, 
+                            num_recs_per_interaction=None, debug_print=None):
+
+    if num_recs_per_interaction is None:
+        def random_gen():
+            while True:
+                yield np.random.randint(1,11)
+        num_recs_per_interaction = random_gen()
+
+    else:
+        try:
+            #Test if it is a integer
+            num_recs = int(num_recs_per_interaction)
+            def single_int(num):
+                while True:
+                    yield num
+            num_recs_per_interaction = single_int(num_recs)
+        except TypeError:
+            print('Expectation is that num_recs_per_interaction is a generator.')
+
+    # Find the interaction times
+    interaction_interarrival_times = np.random.exponential(1.0 / delta, size=num_interactions)
+    interaction_times = np.cumsum(interaction_interarrival_times)
+
+    max_time = interaction_times[-1]
+    change_times = [np.random.exponential(1/nu)]
+    while True:
+        itime = np.random.exponential(1/nu)
+        if change_times[-1] + itime > max_time:
+            break
+        else:
+            change_times.append(change_times[-1] + itime)
+
+
+    t = 0
+    current_sticks = []
+    current_probabilities = np.array([1.0])
+    all_stick_samples = []
+    receivers = []
+    created_sticks = []
+
+    interactions = []
+    change_ind = 0
+    interaction_ind = 0
+    num_receivers = 0
+    created_times = []
+    while t < max_time:
+
+        if (change_ind < len(change_times)) and (change_times[change_ind] < interaction_times[interaction_ind]):
+            #Choose a receiver to change
+            change_receiver = np.random.choice(num_receivers+1, p=current_probabilities)
+            if change_receiver == num_receivers:
+                #Change nothing, in the mass.
+                all_stick_samples.append(-1)
+                receivers.append(-1)
+            else:
+                new_stick = draw_stick(alpha, theta, change_receiver+1)
+                all_stick_samples.append(new_stick)
+                receivers.append(change_receiver)
+
+                #Accounting for current state
+                current_sticks[change_receiver] = new_stick
+                current_probabilities = np.array(current_sticks + [1])
+                current_probabilities[1:] = current_probabilities[1:] * np.cumprod(1 - current_probabilities[:-1])
+            #Keep track of the inds and the time
+            t = change_times[change_ind]
+            change_ind += 1
+        else:
+            interaction = [interaction_times[interaction_ind], []]
+
+            for _ in range(next(num_recs_per_interaction)):
+                if debug_print is not None:
+                    if len(interactions) % debug_print == 0:
+                        print(len(interactions))
+
+                receiver = np.random.choice(num_receivers + 1, p=current_probabilities)
+                if receiver == num_receivers:
+                    created_times.append(interaction_times[interaction_ind])
+                    #New receiver
+                    new_stick = draw_stick(alpha, theta, receiver+1)
+                    current_sticks.append(new_stick)
+                    created_sticks.append(new_stick)
+                    current_probabilities = np.array(current_sticks + [1])
+                    current_probabilities[1:] = current_probabilities[1:] * np.cumprod(1 - current_probabilities[:-1])
+                    num_receivers += 1
+
+                interaction[1].append(receiver)
+
+            interactions.append(interaction)
+
+            t = interaction_times[interaction_ind]
+            interaction_ind += 1
+
+    return interactions, all_stick_samples, receivers, created_times, created_sticks, change_times
+
+
+def create_temporal_e2_data_old(alpha=0.1, theta=10, num_interactions=1000, delta=10, nu=1, max_receivers=20,
                             interaction_save_file=None, parameter_save_file=None):
 
     # Find the interaction times
@@ -162,95 +263,3 @@ def create_temporal_e2_data(alpha=0.1, theta=10, num_interactions=1000, delta=10
         temporal_probs.save(parameter_save_file)
 
     return interactions, temporal_probs
-
-
-def create_temporal_e2_data_v2(alpha=0.1, theta=10, num_interactions=1000, delta=10, nu=1, num_recs_per_interaction=None):
-
-    if num_recs_per_interaction is None:
-        def random_gen():
-            while True:
-                yield np.random.randint(1,11)
-        num_recs_per_interaction = random_gen()
-
-    else:
-        try:
-            #Test if it is a integer
-            num_recs = int(num_recs_per_interaction)
-            def single_int(num):
-                while True:
-                    yield num
-            num_recs_per_interaction = single_int(num_recs)
-        except TypeError:
-            print('Expectation is that num_recs_per_interaction is a generator.')
-
-    # Find the interaction times
-    interaction_interarrival_times = np.random.exponential(1.0 / delta, size=num_interactions)
-    interaction_times = np.cumsum(interaction_interarrival_times)
-
-    max_time = interaction_times[-1]
-    change_times = [np.random.exponential(1/nu)]
-    while True:
-        itime = np.random.exponential(1/nu)
-        if change_times[-1] + itime > max_time:
-            break
-        else:
-            change_times.append(change_times[-1] + itime)
-
-
-    t = 0
-    current_sticks = []
-    current_probabilities = np.array([1.0])
-    all_stick_samples = []
-    receivers = []
-    created_sticks = []
-
-    interactions = []
-    change_ind = 0
-    interaction_ind = 0
-    num_receivers = 0
-    created_times = []
-    while t < max_time:
-
-        if (change_ind < len(change_times)) and (change_times[change_ind] < interaction_times[interaction_ind]):
-            #Choose a receiver to change
-            change_receiver = np.random.choice(num_receivers+1, p=current_probabilities)
-            if change_receiver == num_receivers:
-                #Change nothing, in the mass.
-                all_stick_samples.append(-1)
-                receivers.append(-1)
-            else:
-                new_stick = draw_stick(alpha, theta, change_receiver+1)
-                all_stick_samples.append(new_stick)
-                receivers.append(change_receiver)
-
-                #Accounting for current state
-                current_sticks[change_receiver] = new_stick
-                current_probabilities = np.array(current_sticks + [1])
-                current_probabilities[1:] = current_probabilities[1:] * np.cumprod(1 - current_probabilities[:-1])
-            #Keep track of the inds and the time
-            t = change_times[change_ind]
-            change_ind += 1
-        else:
-            interaction = [interaction_times[interaction_ind], []]
-
-            for _ in range(next(num_recs_per_interaction)):
-                receiver = np.random.choice(num_receivers + 1, p=current_probabilities)
-                if receiver == num_receivers:
-                    created_times.append(interaction_times[interaction_ind])
-                    #New receiver
-                    new_stick = draw_stick(alpha, theta, receiver+1)
-                    current_sticks.append(new_stick)
-                    created_sticks.append(new_stick)
-                    current_probabilities = np.array(current_sticks + [1])
-                    current_probabilities[1:] = current_probabilities[1:] * np.cumprod(1 - current_probabilities[:-1])
-                    num_receivers += 1
-
-                interaction[1].append(receiver)
-
-            interactions.append(interaction)
-
-            t = interaction_times[interaction_ind]
-            interaction_ind += 1
-
-    return interactions, all_stick_samples, receivers, created_times, created_sticks, change_times
-
