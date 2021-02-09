@@ -190,3 +190,34 @@ def plot_ddcrp_debug_plots(interactions, true_probs, estimated_probs, estimated_
             pdf.savefig(fig)
             plt.close(fig)
     return
+
+
+def create_posterior_predictive_dataset(temporal_probs, interaction_times, num_recs_per_interaction):
+
+    num_recs = len(temporal_probs.created_times)
+
+    stick_list = []
+    for r in range(num_recs):
+        if r % 100 == 0:
+            print(r)
+        stick_list = []
+        sticks_ind = np.digitize(interaction_times, tp.arrival_times_dict[r], right=False) - 1
+
+        #sticks_ind[sticks_ind == len(tp.stick_dict[r])] = len(tp.stick_dict[r]) - 1
+        sticks = np.array(temporal_probs.stick_dict[r])[sticks_ind]
+        sticks[times < temporal_probs.created_times[r]] = 0
+        stick_list.append(sticks)
+
+    stick_array = np.array(stick_list)
+    probs_array = stick_array.copy()
+    probs_array[:, 1:] = probs_array[:, 1:] * np.cumprod(1 - probs_array[:, :-1], axis=1)
+
+    pp_interactions = []
+    for i, t, n in enumerate(zip(interaction_times, num_recs_per_interaction)):
+        interaction_recs = np.random.choice(a=num_recs, size=n, p=probs_array[i, :])
+
+        pp_interactions.append([t, interaction_recs])
+
+    return pp_interactions
+
+
