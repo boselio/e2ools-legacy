@@ -26,7 +26,7 @@ def plot_event_times(interactions, r, ax, color='C2'):
     return ax
 
 
-def plot_teem_debug_plots(interactions, true_probs, means, upper_limits, lower_limits, change_times,
+def plot_teem_debug_plots(interactions, means, upper_limits, lower_limits, change_times, true_probs=None, 
                     plot_events=False, true_params=None, gibbs_dir=None, num_chains=None, num_iters_per_chain=None,
                     save_dir='debug.pdf', r_list='all'):
 
@@ -65,7 +65,8 @@ def plot_teem_debug_plots(interactions, true_probs, means, upper_limits, lower_l
                     confidence_label = None
                     mean_label = None
 
-                ax[i, j].plot(*true_probs[r], color='k', linewidth=2, alpha=0.5, label=true_label)
+                if true_probs is not None:
+                    ax[i, j].plot(*true_probs[r], color='k', linewidth=2, alpha=0.5, label=true_label)
                 
                 x = np.concatenate([np.repeat(change_times, 2)[1:], [max_time]])
 
