@@ -11,6 +11,8 @@ from scipy.special import logit
 import matplotlib.backends.backend_pdf
 import math
 from .models import teem
+import pickle
+from pathlib import Path
 
 def plot_event_times(interactions, r, ax, color='C2'):
     r_interactions = [[t, len([rec for rec in recs if rec == r])] for [t, recs] in interactions]
@@ -192,32 +194,78 @@ def plot_ddcrp_debug_plots(interactions, true_probs, estimated_probs, estimated_
     return
 
 
-def create_posterior_predictive_dataset(temporal_probs, interaction_times, num_recs_per_interaction):
+def create_posterior_predictive_dataset(temporal_probs, pp_save_dir, interaction_times, num_recs_per_interaction):
 
     num_recs = len(temporal_probs.created_times)
 
     stick_list = []
-    for r in range(num_recs):
-        if r % 100 == 0:
-            print(r)
-        stick_list = []
-        sticks_ind = np.digitize(interaction_times, tp.arrival_times_dict[r], right=False) - 1
+    for r in range(num_recs):        
+        sticks_ind = np.digitize(interaction_times, temporal_probs.arrival_times_dict[r], right=False) - 1
 
         #sticks_ind[sticks_ind == len(tp.stick_dict[r])] = len(tp.stick_dict[r]) - 1
         sticks = np.array(temporal_probs.stick_dict[r])[sticks_ind]
-        sticks[times < temporal_probs.created_times[r]] = 0
+        sticks[interaction_times < temporal_probs.created_times[r]] = 1
         stick_list.append(sticks)
 
     stick_array = np.array(stick_list)
-    probs_array = stick_array.copy()
-    probs_array[:, 1:] = probs_array[:, 1:] * np.cumprod(1 - probs_array[:, :-1], axis=1)
+    probs_array = np.vstack([stick_array, np.ones(stick_array.shape[1])])
+    #probs_array = stick_array.copy()
+    probs_array[1:, :] = probs_array[1:, :] * np.cumprod(1 - probs_array[:-1, :], axis=0)
 
+    probs_sum = probs_array.sum(axis=0)
+    probs_array = probs_array / probs_sum
     pp_interactions = []
-    for i, t, n in enumerate(zip(interaction_times, num_recs_per_interaction)):
-        interaction_recs = np.random.choice(a=num_recs, size=n, p=probs_array[i, :])
 
-        pp_interactions.append([t, interaction_recs])
+    for i, (t, n) in enumerate(zip(interaction_times, num_recs_per_interaction)):
+        interaction_recs = np.random.choice(a=num_recs+1, size=n, p=probs_array[:, i])
 
-    return pp_interactions
+        pp_interactions.append([t, interaction_recs.tolist()])
+
+    save_interactions(pp_interactions, pp_save_dir)
+    
+    return
 
 
+def create_pp_datasets(save_dir, interaction_times, num_recs, num_chains, num_iters_per_chain, pp_save_dir=None):
+
+    chain_dirs = [save_dir / '{}'.format(c) for c in range(num_chains)]
+    save_paths = [cd / '{}.pkl'.format(i) for cd in chain_dirs for i in range(num_iters_per_chain)]
+
+    tp_list = []
+    for sd in save_paths:
+        with sd.open('rb') as infile:
+            tp, params = pickle.load(infile)
+        tp_list.append(tp)
+
+    if pp_save_dir is None:
+        pp_save_dir = save_dir / 'pp_data'
+
+    pp_chain_dirs = [pp_save_dir / '{}'.format(c) for c in range(num_chains)] 
+
+    for pp_chain_dir in pp_chain_dirs:
+        if not pp_chain_dir.is_dir():
+            pp_chain_dir.mkdir(parents=True)
+
+    pp_save_paths = [pp_cd / '{}.pkl'.format(i) for pp_cd in pp_chain_dirs for i in range(num_iters_per_chain)]
+
+    
+
+
+    pp_func = partial(create_posterior_predictive_dataset, interaction_times=interaction_times,
+                                        num_recs_per_interaction=num_recs)
+
+    with ProcessPoolExecutor() as executor:
+        for _ in executor.map(pp_func, zip(tp_list, pp_save_paths)):
+            continue
+
+
+
+def save_interactions(interactions, file_path):
+
+    file_path = Path(file_path)
+    with file_path.open('w') as outfile:
+        for interaction in interactions:
+            outline = '{} '.format(interaction[0])
+            outline += ' '.join([str(i) for i in interactions[1]])
+            outline += '\n'
+            outfile.write(outline)
