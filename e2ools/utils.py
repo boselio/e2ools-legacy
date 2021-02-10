@@ -194,8 +194,9 @@ def plot_ddcrp_debug_plots(interactions, true_probs, estimated_probs, estimated_
     return
 
 
-def create_posterior_predictive_dataset(temporal_probs, pp_save_dir, interaction_times, num_recs_per_interaction):
+def create_posterior_predictive_dataset(temporal_probs, interaction_times, num_recs_per_interaction):
 
+    np.random.seed()
     num_recs = len(temporal_probs.created_times)
 
     stick_list = []
@@ -220,10 +221,8 @@ def create_posterior_predictive_dataset(temporal_probs, pp_save_dir, interaction
         interaction_recs = np.random.choice(a=num_recs+1, size=n, p=probs_array[:, i])
 
         pp_interactions.append([t, interaction_recs.tolist()])
-
-    save_interactions(pp_interactions, pp_save_dir)
     
-    return
+    return pp_interactions
 
 
 def create_pp_datasets(save_dir, interaction_times, num_recs, num_chains, num_iters_per_chain, pp_save_dir=None):
@@ -246,26 +245,33 @@ def create_pp_datasets(save_dir, interaction_times, num_recs, num_chains, num_it
         if not pp_chain_dir.is_dir():
             pp_chain_dir.mkdir(parents=True)
 
-    pp_save_paths = [pp_cd / '{}.pkl'.format(i) for pp_cd in pp_chain_dirs for i in range(num_iters_per_chain)]
-
-    
-
+    pp_save_paths = [pp_cd / '{}.dat'.format(i) for pp_cd in pp_chain_dirs for i in range(num_iters_per_chain)]
 
     pp_func = partial(create_posterior_predictive_dataset, interaction_times=interaction_times,
                                         num_recs_per_interaction=num_recs)
 
     with ProcessPoolExecutor() as executor:
-        for _ in executor.map(pp_func, zip(tp_list, pp_save_paths)):
-            continue
+        for pp_save_dir, pp_interactions in zip(pp_save_paths, executor.map(pp_func, tp_list)):
+            save_interactions(pp_interactions, pp_save_dir)
 
 
 
 def save_interactions(interactions, file_path):
 
-    file_path = Path(file_path)
+    file_path = file_path
     with file_path.open('w') as outfile:
         for interaction in interactions:
             outline = '{} '.format(interaction[0])
-            outline += ' '.join([str(i) for i in interactions[1]])
+            outline += ' '.join([str(i) for i in interaction[1]])
             outline += '\n'
             outfile.write(outline)
+
+def load_interactions(file_name):
+
+    interactions = []
+    with open(file_name, 'r') as infile:
+        for interaction_str in infile:
+            temp_list = interaction_str.split()
+            interactions.append([float(temp_list[0]), [int(i) for i in temp_list[1:]]])
+
+    return interactions
