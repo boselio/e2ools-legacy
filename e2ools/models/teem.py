@@ -64,12 +64,16 @@ class TemporalProbabilities():
         return times, true_prob_array
 
 
-    def get_stick(self, r, t, return_index=False):
+    def get_stick(self, r, t, return_index=False, before=False):
         if t < self.created_times[r]:
             index = -1
             s = 1
         else:
-            index = bisect.bisect_right(self.arrival_times_dict[r], t) - 1
+            if before:
+                index = bisect.bisect_left(self.arrival_times_dict[r], t) - 1
+            else:
+                index = bisect.bisect_right(self.arrival_times_dict[r], t) - 1
+            assert index >= 0
             s = self.stick_dict[r][index]
 
         if return_index:
@@ -450,10 +454,14 @@ def update_sticks_new_jump_update(tp_initial, interactions, alpha, theta):
         try:
             end_time = change_times[ind+1]
         except: end_time = interaction_times[-1] + 1
-
+        if ind != 0:
+            begin_time = change_times[ind - 1]
+        else:
+            begin_time = 0
         for r in range(num_recs):
-            beta_mat[r, ind+1] = tp_initial.get_stick(r, end_time)
-
+            beta_mat[r, ind] = tp_initial.get_stick(r, ct, before=True)
+            beta_mat[r, ind+1] = tp_initial.get_stick(r, ct)
+     
         num_created_recs = len(tp_initial.created_times[tp_initial.created_times < ct])
         probs = np.array([tp_initial.get_stick(r, ct) for r in range(num_created_recs)] + [1])
         probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
@@ -470,15 +478,24 @@ def update_sticks_new_jump_update(tp_initial, interactions, alpha, theta):
 
         #Now, need to add all other likelihood components, i.e. all degrees for
         #which the receiver did not jump.
-        likelihood_components = degree_mat[:num_created_recs, ind+1] * np.log(beta_mat[:num_created_recs, ind+1])
-        likelihood_components += s_mat[:num_created_recs, ind+1] * np.log(1 - beta_mat[:num_created_recs, ind+1])
+        before_likelihood_components = degree_mat[:num_created_recs, ind] * np.log(beta_mat[:num_created_recs, ind])
+        before_likelihood_components += s_mat[:num_created_recs, ind] * np.log(1 - beta_mat[:num_created_recs, ind])
 
-        log_probs[:-1] += np.sum(likelihood_components) - likelihood_components
-        log_probs[-1] += np.sum(likelihood_components)
+        after_likelihood_components = degree_mat[:num_created_recs, ind+1] * np.log(beta_mat[:num_created_recs, ind+1])
+        after_likelihood_components += s_mat[:num_created_recs, ind+1] * np.log(1 - beta_mat[:num_created_recs, ind+1])
+
+        log_probs += np.sum(before_likelihood_components)
+        log_probs += np.sum(after_likelihood_components)
+        log_probs[:-1] -= after_likelihood_components
+        #log_probs[-1] += np.sum(likelihood_components)
 
         probs = np.exp(log_probs - logsumexp(log_probs))
 
-        new_choice = np.random.choice(num_created_recs+1, p=probs)
+        try:
+            new_choice = np.random.choice(num_created_recs+1, p=probs)
+        except ValueError:
+            import pdb
+            pdb.set_trace()
         rec_choice[ind] = new_choice
         if new_choice == recs_initial[ind]:
             if new_choice == num_created_recs:
