@@ -55,7 +55,7 @@ def create_temporal_e2_data(alpha=0.1, theta=10, num_interactions=1000, delta=10
             print('Expectation is that num_recs_per_interaction is a generator.')
 
     # Find the interaction times
-    interaction_interarrival_times = np.random.exponential(1.0 / delta, size=num_interactions)
+    interaction_interarrival_times = np.concatenate([[0], np.random.exponential(1.0 / delta, size=num_interactions-1)])
     interaction_times = np.cumsum(interaction_interarrival_times)
 
     max_time = interaction_times[-1]
