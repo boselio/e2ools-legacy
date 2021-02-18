@@ -865,7 +865,7 @@ def sample_alpha(alpha, theta, V_array, r_array, sigma=0.1, debug=False):
 
 
 def evaluate_sticks_ll(alpha, theta, V_array, r_array):
-    ll = (-alpha * np.log(V_array) + (theta + (r_array + 1) * alpha) * np.log(1 - V_array)).sum()
+    ll = (-alpha * np.log(V_array) + (theta + (r_array + 1) * alpha - 1) * np.log(1 - V_array)).sum()
     ll -= betaln(1 - alpha, theta + (r_array + 1) * alpha).sum()
     return ll
 
@@ -877,13 +877,13 @@ def evaluate_talpha_neg_ll(talpha, theta, V_array, r_array):
     return neg_ll
 
 
-def evaluate_talpha_gradient(talpha, theta, V_array, r_array):
+def evaluate_talpha_gradient_neg_ll(talpha, theta, V_array, r_array):
     alpha = expit(talpha)
     grad = (-np.log(V_array) + (r_array + 1) * np.log(1 - V_array)).sum()
-    temp = digamma(1 - alpha)
-    temp = -digamma(theta + (r_array + 1) * alpha) * (r_array + 1) + temp
-    temp = temp + digamma(theta + r_array * alpha + 1) * r_array
-    grad += temp.sum()
+    deriv_log_beta = -digamma(1 - alpha)
+    deriv_log_beta += digamma(theta + (r_array + 1) * alpha) * (r_array + 1)
+    deriv_log_beta += -digamma(theta + r_array * alpha + 1) * r_array
+    grad -= deriv_log_beta.sum()
     grad += 1 / alpha - 1 / (1 - alpha)
 
     return -grad * alpha * (1 - alpha)
@@ -892,7 +892,7 @@ def evaluate_talpha_gradient(talpha, theta, V_array, r_array):
 def sample_alpha_hmc(alpha, theta, V_array, r_array, num_steps=50, step_size=0.01, scale=1):
 
     neg_log_prob = partial(evaluate_talpha_neg_ll, theta=theta, V_array=V_array, r_array=r_array)
-    dVdq = partial(evaluate_talpha_gradient, theta=theta, V_array=V_array, r_array=r_array)
+    dVdq = partial(evaluate_talpha_gradient_neg_ll, theta=theta, V_array=V_array, r_array=r_array)
 
     talpha = logit(alpha)
     talpha_array, accepted, rates, U = hamiltonian_monte_carlo(1, neg_log_prob, dVdq, talpha, num_steps, step_size, scale=scale)
@@ -1170,8 +1170,7 @@ def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, si
         if at_new < temporal_probs.created_times[r]:
             accepted.append(False)
             continue
-        #import pdb
-        #pdb.set_trace()
+
         if i < len(arrival_times) - 1 and i > 0:
             if at_new <= arrival_times[i-1] or at_new >= arrival_times[i+1]:
                 accepted.append(False)
