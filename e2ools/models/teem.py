@@ -879,14 +879,14 @@ def evaluate_talpha_neg_ll(talpha, theta, V_array, r_array):
 
 def evaluate_talpha_gradient_neg_ll(talpha, theta, V_array, r_array):
     alpha = expit(talpha)
-    grad = (-np.log(V_array) + (r_array + 1) * np.log(1 - V_array)).sum()
+    grad = (np.log(V_array) - (r_array + 1) * np.log(1 - V_array)).sum()
     deriv_log_beta = -digamma(1 - alpha)
-    deriv_log_beta += digamma(theta + (r_array + 1) * alpha) * (r_array + 1)
-    deriv_log_beta += -digamma(theta + r_array * alpha + 1) * r_array
-    grad -= deriv_log_beta.sum()
-    grad += 1 / alpha - 1 / (1 - alpha)
+    deriv_log_beta += (r_array + 1) * digamma(theta + (r_array + 1) * alpha)
+    deriv_log_beta += -r_array * digamma(theta + r_array * alpha + 1) 
+    grad += deriv_log_beta.sum()
+    grad += - 1 / alpha + 1 / (1 - alpha)
 
-    return -grad * alpha * (1 - alpha)
+    return grad * alpha * (1 - alpha)
 
 
 def sample_alpha_hmc(alpha, theta, V_array, r_array, num_steps=50, step_size=0.01, scale=1):
@@ -912,9 +912,9 @@ def evaluate_ttheta_neg_ll(ttheta, alpha, V_array, r_array):
 def evaluate_ttheta_gradient(ttheta, alpha, V_array, r_array):
     theta = np.exp(ttheta)
     grad = np.log(1 - V_array).sum()
-    temp = -digamma(theta + (r_array + 1) * alpha)
-    temp = temp + digamma(theta + r_array * alpha + 1)
-    grad += temp.sum()
+    deriv_log_beta = digamma(theta + (r_array + 1) * alpha)
+    deriv_log_beta = deriv_log_beta - digamma(theta + r_array * alpha + 1)
+    grad -= deriv_log_beta.sum()
     grad += 1 / theta
     return -grad * theta
 
