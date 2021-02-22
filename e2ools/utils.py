@@ -53,7 +53,7 @@ def get_cumulative_node_data(interactions, return_total=False):
         return cum_dict
 
 
-def plot_teem_posterior_plot(mean, upper_limit, lower_limit, change_times, true_probs=None, plot_events=False, 
+def plot_teem_posterior_plot(mean, upper_limit, lower_limit, change_times, max_time, true_probs=None, plot_events=False, 
                                 interactions=None, legend=True, ax=None):
     
     if ax is None:
@@ -69,7 +69,8 @@ def plot_teem_posterior_plot(mean, upper_limit, lower_limit, change_times, true_
     ax.fill_between(x, y_ll, y_ul, color=fill_color, alpha=0.5, label='95% Posterior CI')
     ax.plot(x, y_ll, color=posterior_color, linewidth=1.5, linestyle='--')
     ax.plot(x, y_ul, color=posterior_color, linewidth=1.5, linestyle='--')
-
+    ax.set_ylabel('Probability')
+    
     y = np.repeat(mean, 2)
     ax.plot(x, y, color=posterior_color, linewidth=1.5, linestyle='-', label='Posterior Mean')
     if legend:
