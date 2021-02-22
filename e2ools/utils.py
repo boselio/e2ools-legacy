@@ -99,7 +99,7 @@ def plot_teem_debug_plots(interactions, means, upper_limits, lower_limits, chang
         number_of_plots = int(r_list[3:])
         r_list = unique_nodes[np.argsort(degrees)[::-1][:number_of_plots]]
 
-    num_pages = math.ceil((len(r_list) + 2)/ 10)
+    num_pages = math.ceil(len(r_list) / 10) + 1
 
     r_counter = 0
 
@@ -107,9 +107,11 @@ def plot_teem_debug_plots(interactions, means, upper_limits, lower_limits, chang
     fill_color = sns.color_palette("Paired")[0]
 
     with matplotlib.backends.backend_pdf.PdfPages(save_dir) as pdf:
-        for p in range(num_pages):
+        for p in range(num_pages-1):
             fig, ax = plt.subplots(5,2, figsize=(8.5, 11))
             for k in range(10):
+                if r_counter == len(r_list):
+                    break
                 r = r_list[r_counter]
                 i, j = np.unravel_index(k, [5, 2])
                 if i == 0 and j == 1:
@@ -148,38 +150,38 @@ def plot_teem_debug_plots(interactions, means, upper_limits, lower_limits, chang
                     
                 ax[i, j].set_title('Receiver {}'.format(r))
                 r_counter += 1
-                if r_counter == len(r_list):
-                    break
-
-            if p == num_pages-1:
-                if true_params is not None:
-                    page_counter = r_counter % 10
-                    if 'alpha' in true_params:
-                        i, j = np.unravel_index(page_counter, [5, 2])
-                        alphas = teem.get_posterior_alphas(gibbs_dir, num_chains, num_iters_per_chain)
-                        ax[i,j].plot(alphas, color=posterior_color, label='Posterior estimates')
-                        x = [0, len(alphas)]
-                        y = [true_params['alpha'], true_params['alpha']]
-
-                        ax[i, j].plot(x, y, color='k', label='True alpha = {}'.format(true_params['alpha']))
-                        ax[i, j].legend()
-                        ax[i, j].set_title('Alpha Trace Plot')
-                        page_counter += 1
-                        
-                    if 'theta' in true_params:
-                        i, j = np.unravel_index(page_counter, [5, 2])
-                        thetas = teem.get_posterior_thetas(gibbs_dir, num_chains, num_iters_per_chain)
-                        ax[i,j].plot(thetas, color=posterior_color, label='Posterior estimates')
-                        x = [0, len(thetas)]
-                        y = [true_params['theta'], true_params['theta']]
-
-                        ax[i, j].plot(x, y, color='k', label='True theta = {}'.format(true_params['theta']))
-                        ax[i, j].legend()
-                        ax[i, j].set_title('Theta Trace Plot')
-
+                
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
+
+        fig, axs = plt.subplots(1, 2, figsize=(8.5, 2.2))
+        alphas = teem.get_posterior_alphas(gibbs_dir, num_chains, num_iters_per_chain)
+        axs[0].plot(alphas, color=posterior_color, label='Posterior estimates')
+        if true_params is not None and 'alpha' in true_params:
+            x = [0, len(alphas)]
+            y = [true_params['alpha'], true_params['alpha']]
+
+            axs[0].plot(x, y, color='k', label='True alpha = {}'.format(true_params['alpha']))
+
+        axs[0].legend()
+        axs[0].set_title('Alpha Trace Plot')
+
+                
+        thetas = teem.get_posterior_thetas(gibbs_dir, num_chains, num_iters_per_chain)
+        axs[1].plot(thetas, color=posterior_color, label='Posterior estimates')
+        if true_params is not None and 'theta' in true_params:
+            x = [0, len(thetas)]
+            y = [true_params['theta'], true_params['theta']]
+
+            axs[1].plot(x, y, color='k', label='True theta = {}'.format(true_params['theta']))
+        axs[1].legend()
+        axs[1].set_title('Theta Trace Plot')
+
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
     return
 
 
@@ -271,7 +273,8 @@ def create_posterior_predictive_dataset(temporal_probs, interaction_times, num_r
     probs_sum = probs_array.sum(axis=0)
     probs_array = probs_array / probs_sum
     pp_interactions = []
-
+    #import pdb
+    #pdb.set_trace()
     for i, (t, n) in enumerate(zip(interaction_times, num_recs_per_interaction)):
         interaction_recs = np.random.choice(a=num_recs+1, size=n, p=probs_array[:, i])
 

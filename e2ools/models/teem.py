@@ -876,7 +876,7 @@ def evaluate_sticks_ll_theta(alpha, theta, V_array, r_array):
 
 def evaluate_talpha_neg_ll(talpha, theta, V_array, r_array):
     alpha = expit(talpha)
-    neg_ll = -evaluate_sticks_ll_theta(alpha, theta, V_array, r_array)
+    neg_ll = -evaluate_sticks_ll(alpha, theta, V_array, r_array)
     neg_ll -= np.log(alpha) + np.log(1 - alpha)
     return neg_ll
 
@@ -1497,7 +1497,7 @@ def get_posterior_alphas(gibbs_dir, num_chains, num_iters_per_chain):
     save_dirs = [os.path.join(gibbs_dir, '{}'.format(i)) for i in range(num_chains)]
     alphas = []
     for save_dir in save_dirs:
-        for i in range(int(num_iters_per_chain / 2)):
+        for i in range(num_iters_per_chain // 2):
             save_path = os.path.join(save_dir, '{}.pkl'.format(i))
             with open(save_path, 'rb') as infile:
                 tp_list, params = pickle.load(infile)
@@ -1511,7 +1511,7 @@ def get_posterior_thetas(gibbs_dir, num_chains, num_iters_per_chain):
     save_dirs = [os.path.join(gibbs_dir, '{}'.format(i)) for i in range(num_chains)]
     thetas = []
     for save_dir in save_dirs:
-        for i in range(int(num_iters_per_chain / 2)):
+        for i in range(num_iters_per_chain // 2):
             save_path = os.path.join(save_dir, '{}.pkl'.format(i))
             with open(save_path, 'rb') as infile:
                 tp_list, params = pickle.load(infile)
