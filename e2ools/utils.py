@@ -28,6 +28,60 @@ def plot_event_times(interactions, r, ax, color='C2'):
     return ax
 
 
+def get_cumulative_node_data(interactions, return_total=False):
+    interaction_time_by_rec = defaultdict(list)
+    all_interaction_times = []
+    for t, interaction_recs in interactions:
+        for r in interaction_recs:
+            interaction_time_by_rec[r].append(t)
+            all_interaction_times.append(t)
+    final_time = interactions[-1][0]
+    cum_dict = {}
+
+    for r, times in interaction_time_by_rec.items():
+        x = np.concatenate([[0], np.repeat(times, 2), [final_time]])
+        y = np.repeat(np.arange(0, len(times)+1), 2)
+        cum_dict[r] = (x, y)
+
+    #all_interaction_times.sort()
+    x = np.concatenate([[0], np.repeat(all_interaction_times, 2), [final_time]])
+    y = np.repeat(np.arange(0, len(all_interaction_times)+1), 2)
+
+    if return_total:
+        return cum_dict, (x, y)
+    else:
+        return cum_dict
+
+
+def plot_teem_posterior_plot(mean, upper_limit, lower_limit, change_times, true_probs=None, plot_events=False, 
+                                interactions=None, legend=True, ax=None):
+    
+    if ax is None:
+        fig, ax = plt.subplots()
+    posterior_color = sns.color_palette("Paired")[1]
+    fill_color = sns.color_palette("Paired")[0]
+
+    x = np.concatenate([np.repeat(change_times, 2)[1:], [max_time]])
+
+    y_ll = np.repeat(upper_limit, 2)
+    y_ul = np.repeat(lower_limit, 2)
+
+    ax.fill_between(x, y_ll, y_ul, color=fill_color, alpha=0.5, label='95% Posterior CI')
+    ax.plot(x, y_ll, color=posterior_color, linewidth=1.5, linestyle='--')
+    ax.plot(x, y_ul, color=posterior_color, linewidth=1.5, linestyle='--')
+
+    y = np.repeat(mean, 2)
+    ax.plot(x, y, color=posterior_color, linewidth=1.5, linestyle='-', label='Posterior Mean')
+    if legend:
+        ax.legend()
+
+    if true_probs is not None:
+        ax.plot(true_probs, color='k', linewidth=2, alpha=0.5, label='True Probability')
+
+    if plot_events:
+        plot_event_times(interactions, r, ax)
+
+
 def plot_teem_debug_plots(interactions, means, upper_limits, lower_limits, change_times, true_probs=None, 
                     plot_events=False, true_params=None, gibbs_dir=None, num_chains=None, num_iters_per_chain=None,
                     save_dir='debug.pdf', r_list='all'):
