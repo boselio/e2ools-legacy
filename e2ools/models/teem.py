@@ -869,10 +869,14 @@ def evaluate_sticks_ll(alpha, theta, V_array, r_array):
     ll -= betaln(1 - alpha, theta + (r_array + 1) * alpha).sum()
     return ll
 
+def evaluate_sticks_ll_theta(alpha, theta, V_array, r_array):
+    ll = ((theta + (r_array + 1) * alpha - 1) * np.log(1 - V_array)).sum()
+    ll -= betaln(1 - alpha, theta + (r_array + 1) * alpha).sum()
+    return ll
 
 def evaluate_talpha_neg_ll(talpha, theta, V_array, r_array):
     alpha = expit(talpha)
-    neg_ll = -evaluate_sticks_ll(alpha, theta, V_array, r_array)
+    neg_ll = -evaluate_sticks_ll_theta(alpha, theta, V_array, r_array)
     neg_ll -= np.log(alpha) + np.log(1 - alpha)
     return neg_ll
 
@@ -909,20 +913,20 @@ def evaluate_ttheta_neg_ll(ttheta, alpha, V_array, r_array):
     return neg_ll
 
 
-def evaluate_ttheta_gradient(ttheta, alpha, V_array, r_array):
+def evaluate_ttheta_gradient_neg_ll(ttheta, alpha, V_array, r_array):
     theta = np.exp(ttheta)
-    grad = np.log(1 - V_array).sum()
+    grad = -np.log(1 - V_array).sum()
     deriv_log_beta = digamma(theta + (r_array + 1) * alpha)
     deriv_log_beta = deriv_log_beta - digamma(theta + r_array * alpha + 1)
-    grad -= deriv_log_beta.sum()
-    grad += 1 / theta
-    return -grad * theta
+    grad += deriv_log_beta.sum()
+    grad -= 1 / theta
+    return grad * theta
 
 
 def sample_theta_hmc(theta, alpha, V_array, r_array, num_steps=10, step_size=0.01, scale=1):
 
     neg_log_prob = partial(evaluate_ttheta_neg_ll, alpha=alpha, V_array=V_array, r_array=r_array)
-    dVdq = partial(evaluate_ttheta_gradient, alpha=alpha, V_array=V_array, r_array=r_array)
+    dVdq = partial(evaluate_ttheta_gradient_neg_ll, alpha=alpha, V_array=V_array, r_array=r_array)
 
     ttheta = np.log(theta)
     #import pdb 
@@ -1056,26 +1060,6 @@ def leapfrog(q, p, dVdq, num_steps, step_size):
 
     # momentum flip at end
     return q, -p
-
-
-def sample_theta(alpha, theta, V_array, r_array, sigma=50, debug=False):
-    theta_prime = theta + np.random.randn() * sigma
-    
-    if theta_prime < 0:
-        return False, theta
-    
-    #Calculate the log likelihood ratio
-    ll_ratio = ((theta_prime - theta) * np.log(1 - V_array)).sum()
-    
-    ll_ratio += betaln(1 - alpha, theta + r_array * alpha).sum()
-    ll_ratio -= betaln(1 - alpha, theta_prime + r_array * alpha).sum()
-    if debug:
-        print('Proposal: {}, ll_ratio: {}'.format(theta_prime, ll_ratio))
-    if np.log(np.random.rand()) < ll_ratio:
-        return True, theta_prime
-    
-    else:
-        return False, theta
 
 
 def evaluate_itime_likelihood(interactions, r, tp, proposal_time, begin_time, end_time, nu):
