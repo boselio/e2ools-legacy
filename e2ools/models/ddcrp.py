@@ -32,8 +32,8 @@ class DDCRPEstimator():
         self.theta = opt.fsolve(self._f_theta, theta_init, args=(scores, max_receiver))[0]
 
         if self.theta > 1e10:
-            print('Max theta was reached, setting to 1e-9.')
-            self.theta = 1e-9
+            print('Max theta was reached, setting to 1e10.')
+            self.theta = 1e10
 
         if self.theta < 0:
             print('Negative theta was acheived, setting to 1e-9.')

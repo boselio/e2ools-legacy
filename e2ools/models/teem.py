@@ -18,6 +18,7 @@ from concurrent.futures import ProcessPoolExecutor
 import math
 from ..utils import plot_event_times
 
+
 class TemporalProbabilities():
     def __init__(self, sticks, receivers, created_times, created_sticks, change_times):
         self.stick_dict = defaultdict(list)
@@ -277,119 +278,6 @@ def draw_beta_speedy(interactions, begin_time, end_time, alpha, theta, r):
     return np.random.beta(a, b)
 
 
-def update_sticks_v2(tp_initial, interactions, alpha, theta):
-
-    num_recs = len(set([r for t, recs in interactions for r in recs]))
-    recs_initial, change_times = zip(*[(r, t) for (r, v) in tp_initial.arrival_times_dict.items() 
-                                        for t in v[1:]])
-    change_times = list(change_times)
-    recs_initial = list(recs_initial)
-
-
-    if len(tp_initial.arrival_times_dict[-1]) > 0:
-        change_times.append(tp_initial.arrival_times_dict[-1][0])
-        recs_initial.append(-1)
-
-    change_times = np.array(change_times)
-    sorted_inds = change_times.argsort()
-    change_times = change_times[sorted_inds]
-    recs_initial = np.array(recs_initial)[sorted_inds]
-
-    rec_choice = np.zeros_like(change_times)
-    stick_choice = np.zeros_like(change_times)
-    interaction_times = np.array([interaction[0] for interaction in interactions])
-    max_time = interactions[-1][0]
-    #created_set = set()
-
-    permuted_inds = np.random.permutation(len(change_times))
-
-    for ind in permuted_inds:
-
-        ct = change_times[ind]
-
-        num_created_recs = len(tp_initial.created_times[tp_initial.created_times < ct])
-        probs = np.array([tp_initial.get_stick(r, ct) for r in range(num_created_recs)] + [1])
-        probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
-
-        new_choice = np.random.choice(num_created_recs+1, p=probs)
-
-        if new_choice == recs_initial[ind]:
-            if new_choice == num_created_recs:
-                #Do nothing
-                continue
-            #Draw the beta
-            end_time = tp_initial.get_next_switch(new_choice, ct)
-            if end_time == -1:
-                end_time = max_time
-            begin_ind = bisect_left(interaction_times, ct)
-            end_ind = bisect_right(interaction_times, end_time)
-
-            new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, ct, alpha, theta, new_choice)
-
-            change_index = tp_initial.arrival_times_dict[new_choice].index(ct)
-            tp_initial.stick_dict[new_choice][change_index] = new_stick
-
-        else:
-            r_delete = int(recs_initial[ind])
-            tp_initial.delete_change(r_delete, ct)
-        
-            if r_delete != -1:
-                # redraw the beta that we had deleted.
-                begin_time, change_ind = tp_initial.get_last_switch(r_delete, ct, return_index=True)
-                end_time = tp_initial.get_next_switch(r_delete, ct)
-                if end_time == -1:
-                    end_time = max_time
-
-                begin_ind = bisect_left(interaction_times, begin_time)
-                end_ind = bisect_right(interaction_times, end_time)
-
-                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, begin_time, alpha, theta, r_delete)
-
-                tp_initial.stick_dict[r_delete][change_ind] = new_stick
-
-            if new_choice == num_created_recs:
-                rec_choice[ind] = -1
-                stick_choice[ind] = -1
-                tp_initial.insert_change(-1, ct, -1.0)
-
-            else:
-                # Draw the beta backward
-                begin_time, change_ind = tp_initial.get_last_switch(new_choice, ct, return_index=True)
-                begin_ind = bisect_left(interaction_times, begin_time)
-                end_ind = bisect_right(interaction_times, ct)
-                
-                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, begin_time, alpha, theta, new_choice)
-
-                tp_initial.stick_dict[new_choice][change_ind] = new_stick
-
-                #Draw the beta forward
-                end_time = tp_initial.get_next_switch(new_choice, ct)
-                if end_time == -1:
-                    end_time = max_time
-                begin_ind = bisect_left(interaction_times, ct)
-                end_ind = bisect_right(interaction_times, end_time)
-
-                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, ct, alpha, theta, new_choice)
-
-                tp_initial.insert_change(new_choice, ct, new_stick)
-
-    # Reupdate all the initial sticks, in case they did not get updated.
-    for r in range(num_recs):
-            #draw beta
-        end_time = tp_initial.get_next_switch(r, tp_initial.created_times[r])
-        if end_time == -1:
-            end_time = max_time
-
-        begin_ind = bisect_left(interaction_times, tp_initial.created_times[r])
-        end_ind = bisect_right(interaction_times, end_time)
-
-        new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, tp_initial.created_times[r], alpha, theta, r)
-
-        tp_initial.stick_dict[r][0] = new_stick
-
-    return tp_initial, rec_choice, stick_choice
-
-
 def get_degree_lists(temporal_probs, interactions):
     degree_by_time_dict = defaultdict(list)
     
@@ -618,191 +506,6 @@ def update_sticks_full_data_update(tp_initial, interactions, alpha, theta):
     return tp_initial
 
 
-def update_sticks_new_jump_update(tp_initial, interactions, alpha, theta):
-
-    num_recs = len(set([r for t, recs in interactions for r in recs]))
-    recs_initial, change_times = zip(*[(r, t) for (r, v) in tp_initial.arrival_times_dict.items() 
-                                        for t in v[1:]])
-    change_times = list(change_times)
-    recs_initial = list(recs_initial)
-
-
-    if len(tp_initial.arrival_times_dict[-1]) > 0:
-        change_times.append(tp_initial.arrival_times_dict[-1][0])
-        recs_initial.append(-1)
-
-    change_times = np.array(change_times)
-    sorted_inds = change_times.argsort()
-    change_times = change_times[sorted_inds]
-    recs_initial = np.array(recs_initial)[sorted_inds]
-
-    rec_choice = np.zeros_like(change_times)
-    stick_choice = np.zeros_like(change_times)
-    interaction_times = np.array([interaction[0] for interaction in interactions])
-    max_time = interactions[-1][0]
-    #created_set = set()
-
-    permuted_inds = np.random.permutation(len(change_times))
-    
-    # calculate all degrees between change times for all receivers
-    degree_mat = np.zeros((num_recs, len(change_times) + 1))
-    beta_mat = np.zeros((num_recs, len(change_times) + 1))
-
-    for i, (begin_time, end_time) in enumerate(zip(np.concatenate([[0], change_times]), np.concatenate([change_times, [interaction_times[-1] + 1]]))):
-
-        begin_ind = bisect_left(interaction_times, begin_time)
-        end_ind = bisect_right(interaction_times, end_time)
-        if begin_ind == end_ind:
-            continue
-            
-        recs, degrees = np.unique([r for interaction in interactions[begin_ind:end_ind] for r in interaction[1]],
-                              return_counts=True)
-
-        for r in recs:
-            if begin_time >= tp_initial.created_times[r] and end_time <= tp_initial.created_times[r]:
-                degrees[recs == r] -= 1
-
-        try:
-            degree_mat[recs, i] = degrees
-        except IndexError:
-            import pdb
-            pdb.set_trace()
-
-        for r in range(num_recs):
-            beta_mat[r, i] = tp_initial.get_stick(r, end_time)
-
-    s_mat = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mat), axis=0))[1:, :], 
-           np.zeros((1, len(change_times)+1))])
-
-    for ind in permuted_inds:
-    #Need to calculate, the likelihood of each stick if that receiver
-    #was not chosen.
-
-        ct = change_times[ind]
-        try:
-            end_time = change_times[ind+1]
-        except: end_time = interaction_times[-1] + 1
-        if ind != 0:
-            begin_time = change_times[ind - 1]
-        else:
-            begin_time = 0
-        for r in range(num_recs):
-            beta_mat[r, ind] = tp_initial.get_stick(r, ct, before=True)
-            beta_mat[r, ind+1] = tp_initial.get_stick(r, ct)
-     
-        num_created_recs = len(tp_initial.created_times[tp_initial.created_times < ct])
-        probs = np.array([tp_initial.get_stick(r, ct) for r in range(num_created_recs)] + [1])
-        probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
-
-        log_probs = np.log(probs)
-        #Calculate likelihood of each jump
-        #First step, add integrated new beta
-        log_probs[:-1] += betaln(1 - alpha + degree_mat[:num_created_recs, ind+1], 
-                            theta + np.arange(1, num_created_recs+1) * alpha + s_mat[:num_created_recs, ind+1])
-        
-        #I think this next line is wrong.
-        #log_probs[-1] += betaln(1 - alpha, 
-        #                    theta + num_created_recs+1 * alpha)
-
-        #Now, need to add all other likelihood components, i.e. all degrees for
-        #which the receiver did not jump.
-        before_likelihood_components = degree_mat[:num_created_recs, ind] * np.log(beta_mat[:num_created_recs, ind])
-        before_likelihood_components += s_mat[:num_created_recs, ind] * np.log(1 - beta_mat[:num_created_recs, ind])
-
-        after_likelihood_components = degree_mat[:num_created_recs, ind+1] * np.log(beta_mat[:num_created_recs, ind+1])
-        after_likelihood_components += s_mat[:num_created_recs, ind+1] * np.log(1 - beta_mat[:num_created_recs, ind+1])
-
-        log_probs += np.sum(before_likelihood_components)
-        log_probs += np.sum(after_likelihood_components)
-        log_probs[:-1] -= after_likelihood_components
-        #log_probs[-1] += np.sum(likelihood_components)
-
-        probs = np.exp(log_probs - logsumexp(log_probs))
-
-        try:
-            new_choice = np.random.choice(num_created_recs+1, p=probs)
-        except ValueError:
-            import pdb
-            pdb.set_trace()
-        rec_choice[ind] = new_choice
-        if new_choice == recs_initial[ind]:
-            if new_choice == num_created_recs:
-                #Do nothing, it stayed in the tail
-                continue
-            else:
-                #Draw the beta
-                end_time = tp_initial.get_next_switch(new_choice, ct)
-                if end_time == -1:
-                    end_time = max_time
-                begin_ind = bisect_left(interaction_times, ct)
-                end_ind = bisect_right(interaction_times, end_time)
-
-                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, ct, alpha, theta, new_choice)
-
-                change_index = tp_initial.arrival_times_dict[new_choice].index(ct)
-                tp_initial.stick_dict[new_choice][change_index] = new_stick
-
-        else:
-            r_delete = int(recs_initial[ind])
-            tp_initial.delete_change(r_delete, ct)
-        
-            if r_delete != -1:
-                # redraw the beta that we had deleted.
-                begin_time, change_ind = tp_initial.get_last_switch(r_delete, ct, return_index=True)
-                end_time = tp_initial.get_next_switch(r_delete, ct)
-                if end_time == -1:
-                    end_time = max_time
-
-                begin_ind = bisect_left(interaction_times, begin_time)
-                end_ind = bisect_right(interaction_times, end_time)
-
-                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, begin_time, alpha, theta, r_delete)
-
-                tp_initial.stick_dict[r_delete][change_ind] = new_stick
-
-            if new_choice == num_created_recs:
-                rec_choice[ind] = -1
-                stick_choice[ind] = -1
-                tp_initial.insert_change(-1, ct, -1.0)
-
-            else:
-                # Draw the beta backward
-                begin_time, change_ind = tp_initial.get_last_switch(new_choice, ct, return_index=True)
-                begin_ind = bisect_left(interaction_times, begin_time)
-                end_ind = bisect_right(interaction_times, ct)
-                
-                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, begin_time, alpha, theta, new_choice)
-
-                tp_initial.stick_dict[new_choice][change_ind] = new_stick
-
-                #Draw the beta forward
-                end_time = tp_initial.get_next_switch(new_choice, ct)
-                if end_time == -1:
-                    end_time = max_time
-                begin_ind = bisect_left(interaction_times, ct)
-                end_ind = bisect_right(interaction_times, end_time)
-
-                new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, ct, alpha, theta, new_choice)
-
-                tp_initial.insert_change(new_choice, ct, new_stick)
-
-    # Reupdate all the initial sticks, in case they did not get updated.
-    for r in range(num_recs):
-            #draw beta
-        end_time = tp_initial.get_next_switch(r, tp_initial.created_times[r])
-        if end_time == -1:
-            end_time = max_time
-
-        begin_ind = bisect_left(interaction_times, tp_initial.created_times[r])
-        end_ind = bisect_right(interaction_times, end_time)
-
-        new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, tp_initial.created_times[r], alpha, theta, r)
-
-        tp_initial.stick_dict[r][0] = new_stick
-
-    return tp_initial, rec_choice, stick_choice
-
-
 def get_created_sticks(interactions, theta, alpha):
     nodes, degrees = np.unique([i for interaction in interactions for i in interaction[1]], return_counts=True)
     degree_dict = dict(zip(nodes, degrees))
@@ -829,41 +532,6 @@ def get_created_times(interactions):
     return np.array(created_times)
 
 
-def sample_alpha(alpha, theta, V_array, r_array, sigma=0.1, debug=False):
-
-    #Transform alpha by logit
-    t_alpha = logit(alpha)
-    t_alpha_prime = t_alpha + np.random.randn() * sigma
-    alpha_prime = expit(t_alpha_prime)
-    
-    #Calculate the log likelihood ratio
-    ll_ratio = ((alpha - alpha_prime) * np.log(V_array) + (r_array + 1) * 
-                (alpha_prime - alpha) * np.log(1 - V_array)).sum()
-    
-    ll_ratio += betaln(1 - alpha, theta + (r_array + 1) * alpha).sum()
-    ll_ratio -= betaln(1 - alpha_prime, theta + (r_array + 1) * alpha_prime).sum()
-
-    #Correct for the transformation
-    ll_ratio += np.log(alpha_prime * (1 - alpha_prime))
-    ll_ratio -= np.log(alpha * (1 - alpha))
-
-    if debug:
-        print('Proposal: {}, ll_ratio: {}'.format(alpha_prime, ll_ratio))
-
-    if np.isnan(ll_ratio):
-        print('Uh oh! log likelihood ratio is NaN.')
-        with open('debug.dat', 'a') as outfile:
-            outfile.write('V_array: {}\n'.format(' '.join([i for i in V_array])))
-            outfile.write('r_array: {}\n'.format(' '.join([i for i in r_array])))
-        return False, alpha
-
-    if np.log(np.random.rand()) < ll_ratio:
-        return True, alpha_prime
-    
-    else:
-        return False, alpha
-
-
 def evaluate_sticks_ll(alpha, theta, V_array, r_array):
     ll = (-alpha * np.log(V_array) + (theta + (r_array + 1) * alpha - 1) * np.log(1 - V_array)).sum()
     ll -= betaln(1 - alpha, theta + (r_array + 1) * alpha).sum()
@@ -874,14 +542,15 @@ def evaluate_sticks_ll_theta(alpha, theta, V_array, r_array):
     ll -= betaln(1 - alpha, theta + (r_array + 1) * alpha).sum()
     return ll
 
-def evaluate_talpha_neg_ll(talpha, theta, V_array, r_array):
+def evaluate_talpha_neg_ll(talpha, theta, V_array, r_array, alpha_prior, beta_prior):
     alpha = expit(talpha)
     neg_ll = -evaluate_sticks_ll(alpha, theta, V_array, r_array)
     neg_ll -= np.log(alpha) + np.log(1 - alpha)
+    neg_ll -= (alpha_prior - 1) * np.log(alpha) + (beta_prior - 1) * np.log(1 - alpha)
     return neg_ll
 
 
-def evaluate_talpha_gradient_neg_ll(talpha, theta, V_array, r_array):
+def evaluate_talpha_gradient_neg_ll(talpha, theta, V_array, r_array, alpha_prior, beta_prior):
     alpha = expit(talpha)
     grad = (np.log(V_array) - (r_array + 1) * np.log(1 - V_array)).sum()
     deriv_log_beta = -digamma(1 - alpha)
@@ -889,14 +558,18 @@ def evaluate_talpha_gradient_neg_ll(talpha, theta, V_array, r_array):
     deriv_log_beta += -r_array * digamma(theta + r_array * alpha + 1) 
     grad += deriv_log_beta.sum()
     grad += - 1 / alpha + 1 / (1 - alpha)
+    grad += -(alpha_prior - 1) / alpha + (beta_prior - 1) / (1 - alpha)
 
     return grad * alpha * (1 - alpha)
 
 
-def sample_alpha_hmc(alpha, theta, V_array, r_array, num_steps=50, step_size=0.01, scale=1):
+def sample_alpha_hmc(alpha, theta, V_array, r_array, alpha_prior, beta_prior, 
+                        num_steps=50, step_size=0.01, scale=1):
 
-    neg_log_prob = partial(evaluate_talpha_neg_ll, theta=theta, V_array=V_array, r_array=r_array)
-    dVdq = partial(evaluate_talpha_gradient_neg_ll, theta=theta, V_array=V_array, r_array=r_array)
+    neg_log_prob = partial(evaluate_talpha_neg_ll, theta=theta, V_array=V_array, 
+                            r_array=r_array, alpha_prior=alpha_prior, beta_prior=beta_prior)
+    dVdq = partial(evaluate_talpha_gradient_neg_ll, theta=theta, V_array=V_array, 
+                            r_array=r_array, alpha_prior=alpha_prior, beta_prior=beta_prior)
 
     talpha = logit(alpha)
     talpha_array, accepted, rates, U = hamiltonian_monte_carlo(1, neg_log_prob, dVdq, talpha, num_steps, step_size, scale=scale)
@@ -906,32 +579,38 @@ def sample_alpha_hmc(alpha, theta, V_array, r_array, num_steps=50, step_size=0.0
     return alpha_prime, accepted
 
 
-def evaluate_ttheta_neg_ll(ttheta, alpha, V_array, r_array):
+def evaluate_ttheta_neg_ll(ttheta, alpha, V_array, r_array, k_prior, theta_prior):
+    #TODO: Important to imcorporate prior
     theta = np.exp(ttheta)
     neg_ll = -evaluate_sticks_ll(alpha, theta, V_array, r_array)
     neg_ll -= np.log(theta)
+    neg_ll -= (k_prior - 1) * np.log(theta) - theta / theta_prior
     return neg_ll
 
 
-def evaluate_ttheta_gradient_neg_ll(ttheta, alpha, V_array, r_array):
+def evaluate_ttheta_gradient_neg_ll(ttheta, alpha, V_array, r_array, k_prior, theta_prior):
+    #TODO: Important to incorporate prior
     theta = np.exp(ttheta)
     grad = -np.log(1 - V_array).sum()
     deriv_log_beta = digamma(theta + (r_array + 1) * alpha)
     deriv_log_beta = deriv_log_beta - digamma(theta + r_array * alpha + 1)
     grad += deriv_log_beta.sum()
     grad -= 1 / theta
+    grad -= (k_prior - 1) / theta - 1 / theta_prior
     return grad * theta
 
 
-def sample_theta_hmc(theta, alpha, V_array, r_array, num_steps=10, step_size=0.01, scale=1):
+def sample_theta_hmc(theta, alpha, V_array, r_array, k_prior, theta_prior, 
+                        num_steps=10, step_size=0.01, scale=1):
 
-    neg_log_prob = partial(evaluate_ttheta_neg_ll, alpha=alpha, V_array=V_array, r_array=r_array)
-    dVdq = partial(evaluate_ttheta_gradient_neg_ll, alpha=alpha, V_array=V_array, r_array=r_array)
+    neg_log_prob = partial(evaluate_ttheta_neg_ll, alpha=alpha, V_array=V_array,
+                            r_array=r_array, k_prior=k_prior, theta_prior=theta_prior)
+    dVdq = partial(evaluate_ttheta_gradient_neg_ll, alpha=alpha, V_array=V_array,
+                            r_array=r_array, k_prior=k_prior, theta_prior=theta_prior)
 
     ttheta = np.log(theta)
-    #import pdb 
-    #pdb.set_trace()
-    ttheta_array, accepted, rates, U = hamiltonian_monte_carlo(1, neg_log_prob, dVdq, ttheta, num_steps, step_size, scale=scale)
+    ttheta_array, accepted, rates, U = hamiltonian_monte_carlo(1, neg_log_prob, dVdq, ttheta, 
+                                                                num_steps, step_size, scale=scale)
 
     theta_prime = np.exp(ttheta_array[-1])
 
@@ -948,12 +627,13 @@ def rjmcmc_jump_times(temporal_probs, nu):
         deletion_ind = np.random.choice(len(arrival_times))
 
         tp_candidate.delete_change(nodes[deletion_ind], arrival_times[ind])
+        #calculate an acceptance probability
 
     else:
+        
         #Insert candidate
         pass
-
-
+        
 
 def hamiltonian_monte_carlo(n_samples, negative_log_prob, dVdq, initial_position, num_steps=10,
                             step_size=0.01, scale=None):
@@ -1185,10 +865,13 @@ def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, si
     return temporal_probs, accepted, log_acceptance_probs
 
 
-def run_chain(save_dir, num_times, created_times, created_sticks, 
-                interactions, alpha, theta, nu, update_alpha=False, change_times=None,
-              update_theta=False, update_interarrival_times=False, sigma_it=1, seed=None):
+def run_chain(save_dir, num_times, interactions, nu, theta_priors=(10, 10), 
+                alpha_priors=(1,1),  update_alpha=False, change_times=None, 
+                update_theta=False, update_interarrival_times=False, sigma_it=1,
+                seed=None):
+
     np.random.seed(seed)
+
 
     max_time = interactions[-1][0]
 
@@ -1203,8 +886,18 @@ def run_chain(save_dir, num_times, created_times, created_sticks,
 
     print('Number of change times: {}'.format(len(change_times)))
     
-    tp_initial = TemporalProbabilities(-1 * np.ones_like(change_times), -1 * np.ones_like(change_times),
-                                         created_times, created_sticks, change_times)
+    #Initialize alpha, theta
+    alpha = np.random.beta(*alpha_priors)
+    theta = np.random.gamma(*theta_priors)
+
+    #initialize sticks
+    created_times = get_created_times(interactions)
+    created_sticks = get_created_sticks(interactions, theta, alpha)
+
+    tp_initial = TemporalProbabilities(-1 * np.ones_like(change_times), 
+                                        -1 * np.ones_like(change_times),
+                                        created_times, created_sticks, 
+                                        change_times)
 
     for t in range(num_times):
         if t % 100 == 0:
@@ -1230,10 +923,13 @@ def run_chain(save_dir, num_times, created_times, created_sticks,
             r_array = np.array(r_array)
 
         if update_alpha:
-            alpha, accepted = sample_alpha_hmc(alpha, theta, V_array, r_array)
+            alpha, accepted = sample_alpha_hmc(alpha, theta, V_array, r_array,
+                                alpha_prior=alpha_priors[0], 
+                                beta_prior=alpha_priors[1])
 
         if update_theta:
-            theta, accepted = sample_theta_hmc(theta, alpha, V_array, r_array)
+            theta, accepted = sample_theta_hmc(theta, alpha, V_array, r_array,
+                                k_prior=theta_priors[0], theta_prior=theta_priors[1])
             #print('theta: {}'.format(theta))
         params = {'alpha': alpha, 'theta': theta}
 
@@ -1244,18 +940,19 @@ def run_chain(save_dir, num_times, created_times, created_sticks,
     return
 
 
-def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters_per_chain=500, 
+def infer_teem(interactions, nu, save_dir, alpha_priors=(1, 1), theta_priors=(10, 10), 
+                num_chains=4, num_iters_per_chain=500, 
                 update_alpha=True, update_theta=True, change_times=None, 
                 update_interarrival_times=True):
     print('Creating Necessary Parameters')
-    created_times = get_created_times(interactions)
-    created_sticks = get_created_sticks(interactions, theta, alpha)
+    
 
-    rc_func = partial(run_chain, num_times=num_iters_per_chain, created_times=created_times,
-                  created_sticks=created_sticks, change_times=change_times,
-                  interactions=interactions, alpha=alpha, theta=theta, nu=nu,
-                  update_alpha=update_alpha, update_theta=update_theta, 
-                  update_interarrival_times=update_interarrival_times)
+    rc_func = partial(run_chain, num_times=num_iters_per_chain, 
+                    alpha_priors=alpha_priors, theta_priors=theta_priors,
+                    change_times=change_times,
+                    interactions=interactions, nu=nu,
+                    update_alpha=update_alpha, update_theta=update_theta, 
+                    update_interarrival_times=update_interarrival_times)
 
     if not pathlib.Path(save_dir).is_dir():
         pathlib.Path(save_dir).mkdir(parents=True)
@@ -1285,7 +982,8 @@ def infer_teem(interactions, alpha, theta, nu, save_dir, num_chains=4, num_iters
     start_time = time.time()
 
     ((upper_limits, lower_limits, means),
-    (probs_ul, probs_ll, probs)) = get_limits_and_means_different_times(save_dir, num_chains, num_iters_per_chain)
+    (probs_ul, probs_ll, probs)) = get_limits_and_means_different_times(save_dir,
+                                                 num_chains, num_iters_per_chain)
     end_time = time.time()
 
     print('Took {} minutes.'.format((end_time - start_time) / 60))

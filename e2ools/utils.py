@@ -262,7 +262,7 @@ def create_posterior_predictive_dataset(temporal_probs, interaction_times, num_r
 
         #sticks_ind[sticks_ind == len(tp.stick_dict[r])] = len(tp.stick_dict[r]) - 1
         sticks = np.array(temporal_probs.stick_dict[r])[sticks_ind]
-        sticks[interaction_times < temporal_probs.created_times[r]] = 1
+        sticks[interaction_times <= temporal_probs.created_times[r]] = 1
         stick_list.append(sticks)
 
     stick_array = np.array(stick_list)
