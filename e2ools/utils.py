@@ -270,6 +270,45 @@ def create_posterior_predictive_dataset_new(temporal_probs, interaction_times, n
     probs_array = stick_array.copy()
     probs_array[1:, :] = probs_array[1:, :] * np.cumprod(1 - probs_array[:-1, :], axis=0)
 
+    #import pdb
+    #pdb.set_trace()
+    probs_sum = probs_array.sum(axis=0)
+    probs_array = probs_array / probs_sum
+    pp_interactions = []
+    #import pdb
+    #pdb.set_trace()
+    for i, (t, n) in enumerate(zip(interaction_times, num_recs_per_interaction)):
+        if (t == temporal_probs.created_times).any():
+            interaction_recs = np.where(t == temporal_probs.created_times)[0]
+        else:
+            interaction_recs = np.random.choice(a=num_recs, size=n, p=probs_array[:, i])
+
+        pp_interactions.append([t, interaction_recs.tolist()])
+    
+    return pp_interactions
+
+
+def create_posterior_predictive_dataset_random_gen(temporal_probs, interaction_times, num_recs_per_interaction):
+
+    np.random.seed()
+    num_recs = len(temporal_probs.created_times)
+
+    stick_list = []
+    for r in range(num_recs):        
+        sticks_ind = np.digitize(interaction_times, temporal_probs.arrival_times_dict[r], right=False) - 1
+
+        #sticks_ind[sticks_ind == len(tp.stick_dict[r])] = len(tp.stick_dict[r]) - 1
+        sticks = np.array(temporal_probs.stick_dict[r])[sticks_ind]
+        sticks[interaction_times <= temporal_probs.created_times[r]] = 0
+        stick_list.append(sticks)
+
+    stick_array = np.array(stick_list)
+    #probs_array = np.vstack([stick_array, np.ones(stick_array.shape[1])])
+    probs_array = stick_array.copy()
+    probs_array[1:, :] = probs_array[1:, :] * np.cumprod(1 - probs_array[:-1, :], axis=0)
+
+    #import pdb
+    #pdb.set_trace()
     probs_sum = probs_array.sum(axis=0)
     probs_array = probs_array / probs_sum
     pp_interactions = []
@@ -312,14 +351,14 @@ def create_posterior_predictive_dataset(temporal_probs, interaction_times, num_r
     probs_sum = probs_array.sum(axis=0)
     probs_array = probs_array / probs_sum
     pp_interactions = []
-    #import pdb
-    #pdb.set_trace()
+    
     for i, (t, n) in enumerate(zip(interaction_times, num_recs_per_interaction)):
         interaction_recs = np.random.choice(a=num_recs+1, size=n, p=probs_array[:, i])
 
         pp_interactions.append([t, interaction_recs.tolist()])
     
     return pp_interactions
+
 
 def create_pp_datasets(save_dir, interaction_times, num_recs, num_chains, num_iters_per_chain, pp_save_dir=None):
 
@@ -343,7 +382,9 @@ def create_pp_datasets(save_dir, interaction_times, num_recs, num_chains, num_it
 
     pp_save_paths = [pp_cd / '{}.dat'.format(i) for pp_cd in pp_chain_dirs for i in range(num_iters_per_chain)]
 
-    pp_func = partial(create_posterior_predictive_dataset, interaction_times=interaction_times,
+    #pp_func = partial(create_posterior_predictive_dataset, interaction_times=interaction_times,
+    #                                    num_recs_per_interaction=num_recs)
+    pp_func = partial(create_posterior_predictive_dataset_new, interaction_times=interaction_times,
                                         num_recs_per_interaction=num_recs)
 
     with ProcessPoolExecutor() as executor:
