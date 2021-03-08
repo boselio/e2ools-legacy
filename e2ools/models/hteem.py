@@ -26,7 +26,7 @@ sns.set()
 from scipy.special import betaln, logsumexp
 import pathlib
 from concurrent.futures import ProcessPoolExecutor
-
+from .teem import sample_alpha_hmc, sample_theta_hmc
 
 def dd_list():
     return defaultdict(list)
@@ -79,7 +79,7 @@ class HTEEM():
         #a particular jump point.
         self.table_counts = defaultdict(list)
         self.sticks = defaultdict(list)
-        #Created inds of each table, accordinf to the change times. 
+        #Created inds of each table, according to the change times. 
         #This is a new thing; used to be created_times.
         self.created_inds = defaultdict(list)
 
@@ -122,9 +122,16 @@ class HTEEM():
         self._sample_table_configuration(interactions, initial=True)
 
 
+    def sample_interarrival_times(self):
+        pass
+
+
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
-                    sample_parameters=True, update_alpha=False, update_theta=False,
-                    update_interarrival_times=False, seed=None, debug_fixed_loc=False):
+                    sample_parameters=True, update_global_alpha=False, update_global_theta=False,
+                    update_local_thetas=True, global_alpha_priors=(1,1), globasl_theta_priors=(10,10),
+                    local_theta_priors=(2,5), update_interarrival_times=False, seed=None, 
+                    debug_fixed_loc=False):
+        
         np.random.seed(seed)
         max_time = interactions[-1][0]
 
@@ -150,6 +157,43 @@ class HTEEM():
             self._sample_table_configuration(interactions)
             self._sample_jump_locations(interactions, debug_fixed_locations=debug_fixed_loc)
 
+
+            if update_global_alpha or update_global_theta or update_local_thetas:
+                #Calculate V_array and r_array
+                V_array = []
+                r_array = []
+                for k, v in tp_initial.stick_dict.items():
+                    for s in v:
+                        if k != -1:
+                            V_array.append(s)
+                            r_array.append(k)
+                V_array = np.array(V_array)
+                r_array = np.array(r_array)
+                if update_global_alpha:
+                    self.alpha, accepted = sample_alpha_hmc(self.alpha, self.theta, self.global_sticks, 
+                                    np.arange(len(self.global_sticks)),
+                                    alpha_prior=global_alpha_priors[0], 
+                                    beta_prior=global_alpha_priors[1])
+                
+                if update_global_theta:
+                    self.theta, accepted = sample_theta_hmc(self.theta, self.alpha, self.global_sticks, 
+                                    np.arange(len(self.global_sticks)),
+                                    k_prior=global_theta_priors[0], 
+                                    theta_prior=global_theta_priors[1])
+                
+                if update_local_thetas:
+                    for s in range(self.s_size):
+                        sticks = np.concatenate(self.sticks[s])
+                        rs = np.array([i for (i, a) in sticks[s] for _ in a])
+                        theta_s, accepted = sample_theta_hmc(self.theta_s[s], 0, sticks, rs,
+                                    k_prior=local_theta_priors[0], 
+                                    theta_prior=local_theta_priors[1])
+                        self.theta_s[s] = theta_s
+
+
+            if update_interarrival_times:
+                self.sample_interarrival_times()
+                
             params = {'alpha': self.alpha, 'theta': self.theta,
                         'theta_s': self.theta_s,
                         'receiver_inds': self.receiver_inds,
@@ -159,13 +203,6 @@ class HTEEM():
                         'table_counts': self.table_counts,
                         'created_inds': self.created_inds
                         }
-
-            if update_alpha or update_theta:
-                print(update_alpha)
-
-            if update_interarrival_times:
-                print('k')
-                
             if t >= num_times / 2:
                 file_dir = save_dir / '{}.pkl'.format(t - int(num_times / 2))
                 with file_dir.open('wb') as outfile:
