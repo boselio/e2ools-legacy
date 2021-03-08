@@ -160,7 +160,12 @@ class HTEEM():
                         'created_inds': self.created_inds
                         }
 
+            if update_alpha or update_theta:
+                print(update_alpha)
 
+            if update_interarrival_times:
+                print('k')
+                
             if t >= num_times / 2:
                 file_dir = save_dir / '{}.pkl'.format(t - int(num_times / 2))
                 with file_dir.open('wb') as outfile:
