@@ -122,13 +122,9 @@ class HTEEM():
         self._sample_table_configuration(interactions, initial=True)
 
 
-    def sample_interarrival_times(self):
-        pass
-
-
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
                     sample_parameters=True, update_global_alpha=False, update_global_theta=False,
-                    update_local_thetas=True, global_alpha_priors=(1,1), globasl_theta_priors=(10,10),
+                    update_local_thetas=False, global_alpha_priors=(1,1), globasl_theta_priors=(10,10),
                     local_theta_priors=(2,5), update_interarrival_times=False, seed=None, 
                     debug_fixed_loc=False):
         
@@ -149,26 +145,16 @@ class HTEEM():
         s_time = time.time()
         for t in range(num_times):
             
-            #if t % 50 == 0:
-            #    e_time = time.time()
-            #    print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
-            #    s_time = time.time()
+            if t % 50 == 0:
+                e_time = time.time()
+                print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
+                s_time = time.time()
 
             self._sample_table_configuration(interactions)
             self._sample_jump_locations(interactions, debug_fixed_locations=debug_fixed_loc)
 
 
             if update_global_alpha or update_global_theta or update_local_thetas:
-                #Calculate V_array and r_array
-                V_array = []
-                r_array = []
-                for k, v in tp_initial.stick_dict.items():
-                    for s in v:
-                        if k != -1:
-                            V_array.append(s)
-                            r_array.append(k)
-                V_array = np.array(V_array)
-                r_array = np.array(r_array)
                 if update_global_alpha:
                     self.alpha, accepted = sample_alpha_hmc(self.alpha, self.theta, self.global_sticks, 
                                     np.arange(len(self.global_sticks)),
@@ -229,7 +215,7 @@ class HTEEM():
             #import pdb
             #pdb.set_trace()
 
-            self.sample_ordering()
+            #self.sample_ordering()
             num_senders = len(self.created_sender_times)
 
             for s in range(len(self.table_counts)):
@@ -268,17 +254,6 @@ class HTEEM():
             self.remove_empty_tables()
             self.sample_ordering()
             #sample_ordering()
-
-        #Update local sticks
-        #for s in self.sticks.keys():
-        #    reverse_counts = np.cumsum(self.table_counts[s][::-1])[::-1]
-        #    reverse_counts = np.concatenate([reverse_counts[1:], [0]])
-        #    a = 1 + self.table_counts[s]
-        #    b = reverse_counts + self.theta_s[s]
-
-        #    self.sticks[s] = np.random.beta(a, b)
-        #    self.probs[s] = np.concatenate([self.sticks[s], [1]])
-        #    self.probs[s][1:] = self.probs[s][1:] * np.cumprod(1 - self.probs[s][:-1])
 
         #Update global sticks
         reverse_counts = np.cumsum(self.global_table_counts[::-1])[::-1]
@@ -449,14 +424,15 @@ class HTEEM():
 
 
     def remove_empty_tables(self):
-        #import pdb
-        #pdb.set_trace()
+
         for s in self.table_counts.keys():
             for time_ind in range(len(self.change_times) + 1):
-                empty_tables = np.array(np.where(np.array(self.created_inds[s]) == time_ind)[0])
-                empty_tables = np.where(np.array([self.table_counts[s][r][time_ind] 
-                                                for r in empty_tables]) == 0)[0]
-
+                created_tables = np.array(np.where(np.array(self.created_inds[s]) == time_ind)[0])
+                empty_tables = created_tables[np.where(np.array([self.table_counts[s][r][time_ind] 
+                                                for r in created_tables]) == 0)[0]]
+                #import pdb
+                #pdb.set_trace()
+                
                 for e_t in empty_tables:
                     for r, inds in self.receiver_inds[s].items():
                         inds = np.flatnonzero(inds == e_t)
@@ -483,14 +459,25 @@ class HTEEM():
                         new_ind = bisect_right(self.receiver_inds[s][r][:-1], new_table) - 1
 
                         self.receiver_inds[s][r][ind:new_ind] = self.receiver_inds[s][r][ind+1:new_ind+1]
-                        self.receiver_inds[s][r][new_ind] = new_table
+                        
                 
-                        for r in self.receiver_inds[s].keys():
-                            change = (self.receiver_inds[s][r] > e_t) & (self.receiver_inds[s][r] <= new_table)
-                            self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
+                        for r_change in self.receiver_inds[s].keys():
+                            change = (self.receiver_inds[s][r_change] > e_t) & (self.receiver_inds[s][r_change] <= new_table)
+                            self.receiver_inds[s][r_change][change] = self.receiver_inds[s][r_change][change] - 1
+
+                        self.receiver_inds[s][r][new_ind] = new_table
 
                         self.created_inds[s][new_table] = new_created_ind
                         self.sticks[s][new_table][:new_created_ind] = 1
+                        empty_tables[(empty_tables > e_t) & (empty_tables <= new_table)] -= 1
+
+                    #try:
+                    #    assert (np.array(self.table_counts[0]).sum(axis=1)[:e_t] != 0).all()
+                    #except AssertionError:
+                    #    import pdb
+                    #    pdb.set_trace()
+
+            assert (np.array(self.table_counts[s]).sum(axis=1) != 0).all()
 
 
     def delete_table(self, s, r, table, ind):
@@ -758,6 +745,10 @@ class HTEEM():
 
     def draw_local_beta(self, d, s, theta):
         return np.random.beta(d + 1, s + theta)
+
+
+    def sample_interarrival_times(self):
+        pass
 
 
 def read_files(save_dir=None, num_chains=4, num_iters_per_chain=500):
