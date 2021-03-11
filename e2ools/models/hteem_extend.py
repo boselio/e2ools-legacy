@@ -62,15 +62,19 @@ class HTEEM():
         self.max_time = interactions[-1][0]
         self.global_table_counts = np.array([])
         ####
+        
         #Sampled (or given) change times
         self.change_times = change_times
+        
         #The locations that are sampled for each change time.
         self.change_locations = [(-1, -1) for _ in self.change_times]
+        
         #indices of changes, per sender and per table
-
         self.table_change_inds = defaultdict(dd_list)
+        
         #Number of tables in each restaurant
         self.num_tables_in_s = defaultdict(int)
+        
         #The inds that are for a particular receiver, in addition to the new table probability.
         self.receiver_inds = defaultdict(df_rec_inds2)
 
@@ -78,10 +82,12 @@ class HTEEM():
         #with each entry of the lower list corresponding to the tables counts at
         #a particular jump point.
         self.table_counts = defaultdict(list)
+        
         self.sticks = defaultdict(list)
         #Created inds of each table, according to the change times. 
         #This is a new thing; used to be created_times.
-        self.created_inds = defaultdict(list)
+        
+        #self.created_inds = defaultdict(list)
 
         #Global info
         self.global_sticks = np.array([])
@@ -239,7 +245,6 @@ class HTEEM():
                                         s_mats[s][table,:].sum(), self.theta_s[s])
                     self.sticks[s][table][begin_ind:] = new_stick
                     self.sticks[s][table][:begin_ind] = 1
-            #
 
         else:
             interaction_inds = np.random.permutation(len(interactions))
@@ -252,7 +257,7 @@ class HTEEM():
                     self._add_customer(t, s, r)
 
             self.remove_empty_tables()
-            self.sample_ordering()
+            #self.sample_ordering()
             #sample_ordering()
 
         #Update global sticks
@@ -312,28 +317,30 @@ class HTEEM():
     def insert_table(self, t, s, r):
         time_bin = bisect_right(self.change_times, t)
         #Randomize?
-        insert_left_point = bisect_left(self.created_inds[s], time_bin)
-        insert_right_point = bisect_right(self.created_inds[s], time_bin)
-        insert_point = np.random.choice(np.arange(insert_left_point, insert_right_point+1))
+        #insert_left_point = bisect_left(self.created_inds[s], time_bin)
+        #insert_right_point = bisect_right(self.created_inds[s], time_bin)
+        #insert_point = np.random.choice(np.arange(insert_left_point, insert_right_point+1))
 
-        insert_point = insert_right_point
-        for r_prime in self.receiver_inds[s].keys():
-            ii = self.receiver_inds[s][r_prime] >= insert_point
-            self.receiver_inds[s][r_prime][ii] = self.receiver_inds[s][r_prime][ii] + 1
-
+        #insert_point = insert_right_point
+        #for r_prime in self.receiver_inds[s].keys():
+        #    ii = self.receiver_inds[s][r_prime] >= insert_point
+        #    self.receiver_inds[s][r_prime][ii] = self.receiver_inds[s][r_prime][ii] + 1
+        rec_insert_point = -2
+        insert_point = len(self.table_counts[s])
         try:
             rec_insert_point = bisect_right(self.receiver_inds[s][r][:-1], insert_point)
         except IndexError:
             import pdb
             pdb.set_trace()
 
-        self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], rec_insert_point, insert_point)
+        self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], -1, insert_point)
         self.num_tables_in_s[s] += 1
-        self.table_counts[s].insert(insert_point, np.zeros(len(self.change_times) + 1))
+        self.table_counts[s].append(np.zeros(len(self.change_times) + 1))
         self.table_counts[s][insert_point][time_bin] += 1
-        self.created_inds[s].insert(insert_point, time_bin)
-        self.sticks[s].insert(insert_point, np.ones(len(self.change_times) + 1) * np.random.beta(1, self.theta_s[s]))
-        self.sticks[s][insert_point][:time_bin] = 1
+
+        #self.created_inds[s].insert(insert_point, time_bin)
+        self.sticks[s].append(np.ones(len(self.change_times) + 1) * np.random.beta(1, self.theta_s[s]))
+        #self.sticks[s][insert_point][:time_bin] = 1
         self.global_table_counts[r] += 1
 
         for s_temp in range(len(self.receiver_inds)):
@@ -378,22 +385,18 @@ class HTEEM():
 
     def get_unnormalized_probabilities(self, t, s, r):
         time_bin = bisect_right(self.change_times, t)
-        max_point = bisect_right(self.created_inds[s], time_bin)
+        #max_point = bisect_right(self.created_inds[s], time_bin)
         if max_point == 0:
             #No tables have been created at this time.
             rec_probs = [1.0]
             rec_inds = []
             return  rec_probs, rec_inds
         
-        sticks = [self.get_stick(s, i, t) for i in range(max_point)]
+        sticks = [stick[time_bin] for stick in self.sticks[s]]
         probs = np.concatenate([sticks, [1]])
         probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
-        try:
-            max_rec_point = bisect_right([self.created_inds[s][i] for i in self.receiver_inds[s][r][:-1]], time_bin)
-            rec_probs = np.concatenate([probs[self.receiver_inds[s][r][:max_rec_point]], [probs[-1]]])
-        except IndexError:
-            import pdb
-            pdb.set_trace()
+        rec_probs = np.concatenate([probs[self.receiver_inds[s][r]], [probs[-1]]])
+        
         rec_probs[-1] = rec_probs[-1] * self.global_probs[r]
     
         return rec_probs.tolist(), self.receiver_inds[s][r][:max_rec_point]
@@ -401,10 +404,8 @@ class HTEEM():
 
     def get_stick(self, s, table, t):
         time_bin = bisect_right(self.change_times, t)
-        if time_bin < self.created_inds[s][table]:
-            stick = 1
-        else:
-            stick = self.sticks[s][table][time_bin]
+        stick = self.sticks[s][table][time_bin]
+        
         return stick
 
 
@@ -413,15 +414,7 @@ class HTEEM():
         #before_ind = self.get_last_switch(s, i, change_ind)
         #after_ind = self.get_next_switch(s, i, before_ind)
         time_bin = bisect_right(self.change_times, t)
-        if time_bin < self.created_inds[s][table]:
-            counts = 0
-        else:
-            #before_ind = self.get_last_switch(s, table, time_bin)
-            #after_ind = self.get_next_switch(s, table, time_bin)
-            #import pdb
-            #pdb.set_trace()
-            #counts = sum(self.table_counts[s][table][before_ind:after_ind])
-            counts = self.table_counts[s][table][time_bin]
+        counts = self.table_counts[s][table][time_bin]
 
         return counts
 
