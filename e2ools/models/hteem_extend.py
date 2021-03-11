@@ -325,13 +325,7 @@ class HTEEM():
         #for r_prime in self.receiver_inds[s].keys():
         #    ii = self.receiver_inds[s][r_prime] >= insert_point
         #    self.receiver_inds[s][r_prime][ii] = self.receiver_inds[s][r_prime][ii] + 1
-        rec_insert_point = -2
         insert_point = len(self.table_counts[s])
-        try:
-            rec_insert_point = bisect_right(self.receiver_inds[s][r][:-1], insert_point)
-        except IndexError:
-            import pdb
-            pdb.set_trace()
 
         self.receiver_inds[s][r] = np.insert(self.receiver_inds[s][r], -1, insert_point)
         self.num_tables_in_s[s] += 1
@@ -422,6 +416,11 @@ class HTEEM():
     def remove_empty_tables(self):
 
         for s in self.table_counts.keys():
+            #Find all the empty tables
+            table_counts = np.array(self.table_counts[s]).sum(axis=1)
+            empty_tables = np.where(table_counts == 0)[0]
+            for e_t in empty_tables:
+                self.delete_table(s, t)
             for time_ind in range(len(self.change_times) + 1):
                 created_tables = np.array(np.where(np.array(self.created_inds[s]) == time_ind)[0])
                 empty_tables = created_tables[np.where(np.array([self.table_counts[s][r][time_ind] 
