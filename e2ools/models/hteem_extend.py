@@ -681,7 +681,7 @@ class HTEEM():
 
 
 def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_chain, 
-                                        stick_name='stick_avgs.pkl', prob_name='prob_avgs.pkl'):
+                                         rob_name='prob_avgs.pkl'):
 
     times = []
 
@@ -703,10 +703,10 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
     num_times = len(times)
     num_recs = len(params['global_sticks'])
     num_senders = len(params['table_counts'])
-    means = {s: np.zeros((num_times, num_recs)) for s in range(num_senders)}
-    medians = {s: np.zeros((num_times, num_recs)) for s in range(num_senders)}
-    upper_limits = {s: np.zeros((num_times, num_recs)) for s in range(num_senders)}
-    lower_limits = {s: np.zeros((num_times, num_recs)) for s in range(num_senders)}
+    mean_dict = {}
+    median_dict = {}
+    ul_dict = {}
+    ll_dict = {}
 
 
     for s in range(num_senders):
@@ -725,40 +725,27 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
         del rec_prob_list
 
         upper_limits = np.percentile(rec_prob_array, 97.5, axis=-1)
+        ul_dict[s] = upper_limits
+
         lower_limits = np.percentile(rec_prob_array, 2.5, axis=-1)
+        ll_dict[s] = lower_limits
+
         means = stick_array.mean(axis=-1)
+        mean_dict[s] = means
+
         medians = np.median(stick_array, axis=-1)
+        median_dict[s] = medians
 
 
-        with open(os.path.join(gibbs_dir, stick_name), 'wb') as outfile:
-            pickle.dump({'means': means,
-                         'upper_limits': upper_limits,
-                         'lower_limits': lower_limits,
-                         'medians': medians}, outfile)
-
-
-        probs = np.ones((means.shape[0], means.shape[1] + 1))
-        probs[:, :-1] = means
-        probs[:, 1:] = probs[:, 1:] * (np.cumprod(1 - means, axis=1))
-
-
-        probs_ll = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
-        probs_ul = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
-
-        probs_ll[:, :-1] = lower_limits
-        probs_ll[:, 1:] = probs_ll[:, 1:] * (np.cumprod(1 - upper_limits, axis=1))
-
-        probs_ul[:, :-1] = upper_limits
-        probs_ul[:, 1:] = probs_ul[:, 1:] * (np.cumprod(1 - lower_limits, axis=1))
-
-        with open(os.path.join(gibbs_dir, prob_name), 'wb') as outfile:
-            pickle.dump({'times': times,
-                         'means': probs,
-                         'upper_limits': probs_ul,
-                         'lower_limits': probs_ll,
-                         'medians': medians}, outfile)
+    with open(os.path.join(gibbs_dir, prob_name), 'wb') as outfile:
+        pickle.dump({'means': mean_dict,
+                     'upper_limits': ul_dict,
+                     'lower_limits': ll_dict,
+                     'medians': median_dict}, 
+                     outfile)
 
     return (upper_limits, lower_limits, means), (probs_ul, probs_ll, probs)
+
 
 def read_files(save_dir=None, num_chains=4, num_iters_per_chain=500):
 
