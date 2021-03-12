@@ -193,7 +193,6 @@ class HTEEM():
                         'sticks': self.sticks,
                         'change_times': change_times,
                         'table_counts': self.table_counts,
-                        'created_inds': self.created_inds
                         }
             if t >= num_times / 2:
                 file_dir = save_dir / '{}.pkl'.format(t - int(num_times / 2))
@@ -229,22 +228,21 @@ class HTEEM():
                 s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
                                                         np.zeros((1, len(self.change_times) + 1))])
 
-                for table in range(len(self.table_counts[s])):
-                    try:
-                        degree_mats[s][table, self.created_inds[s][table]] -= 1
-                    except IndexError:
-                        import pdb
-                        pdb.set_trace()
+                #for table in range(len(self.table_counts[s])):
+                #    try:
+                #        degree_mats[s][table, self.created_inds[s][table]] -= 1
+                #    except IndexError:
+                #        import pdb
+                #        pdb.set_trace()
 
             for s in range(len(self.table_counts)):
                 for table in range(len(self.table_counts[s])):
                     #draw beta
-                    begin_ind = self.created_inds[s][table]
+                    begin_ind = 0
 
                     new_stick = self.draw_local_beta(degree_mats[s][table,:].sum(),
                                         s_mats[s][table,:].sum(), self.theta_s[s])
                     self.sticks[s][table][begin_ind:] = new_stick
-                    self.sticks[s][table][:begin_ind] = 1
 
         else:
             interaction_inds = np.random.permutation(len(interactions))
@@ -272,46 +270,26 @@ class HTEEM():
 
 
     def sample_ordering(self):
-        #Need to resample the ordering, but keeping the created inds in tact.
-        #Also, need to sample so that the 0's go first, 1's go second, etc.
+        #Need to resample the ordering
         
         for s, table_sticks in self.sticks.items():
-            new_placement_dict = {}
-            table_indicator = 0
-            for time_ind in range(len(self.change_times) + 1):
-                if (np.array(self.created_inds[s]) != time_ind).all():
-                    continue
+            #Need to calculate the average probability over all time.
+            ct_diff = np.diff(np.concatenate([self.change_times, [self.max_time]]))
+            probs = np.array(table_sticks)
+            probs[1:, :] = probs[1:, :] * np.cumprod(1 - probs[:-1, :], axis=0)
 
-                table_order = []
-                table_probs = np.array([ts[time_ind] for ts in table_sticks])
-                #table_probs = np.concatenate([table_probs, [1]])
-                table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
-                table_probs, tables = zip(*[(t, i) for i, t in enumerate(table_probs.tolist()) if 
-                                                                self.created_inds[s][i] == time_ind])
-                table_probs = list(table_probs)
-                tables = list(tables)
-                num_tables_sampled = len(tables)
-            #tables = list(range(len(self.table_counts[s])))
-                for new_table_ind in range(num_tables_sampled):
-                    old_table_ind = choice_discrete_unnormalized(table_probs, np.random.rand())
-                    new_placement_dict[tables[old_table_ind]] = new_table_ind + table_indicator
-                    tables.pop(old_table_ind)
-                    table_probs.pop(old_table_ind)
+            scores = (probs * ct_diff).sum(axis=1) / self.max_time 
+            scores = scores / scores.sum()
+            new_ordering = np.random.choice(len(scores), size=len(scores), replace=False, p=scores)
 
-                table_indicator += num_tables_sampled
-
-            new_placement_dict[-1] = -1
-            reverse_new_placements = {v: k for k, v in new_placement_dict.items()}
-            tables = list(range(len(self.table_counts[s])))
-            self.sticks[s] = [self.sticks[s][reverse_new_placements[t]] for t in tables]
+            reverse_new_placements = {v: k for k, v in enumerate(new_ordering)}
+            reverse_new_placements[-1] = [-1]
+            self.sticks[s] = [self.sticks[s][i] for i in new_ordering]
             for r in self.receiver_inds[s].keys():
-                self.receiver_inds[s][r] = np.array([new_placement_dict[t] for t in self.receiver_inds[s][r]])
+                self.receiver_inds[s][r] = np.array([reverse_new_placements[t] for t in self.receiver_inds[s][r]])
                 self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
-            #self.table_change_inds 
-            #self.change_locations
-            self.table_counts[s] = [self.table_counts[s][reverse_new_placements[t]] for t in tables]
-            #self.created_inds = 
-        #For now, just do them all
+
+            self.table_counts[s] = [self.table_counts[s][i] for i in new_ordering]
 
 
     def insert_table(self, t, s, r):
@@ -340,9 +318,7 @@ class HTEEM():
         for s_temp in range(len(self.receiver_inds)):
             temp = np.sort(np.concatenate([l[:-1] for l in self.receiver_inds[s].values()]))
             assert (temp == np.arange(len(temp))).all()
-            assert len(temp) == len(self.created_inds[s])
             assert len(temp) == len(self.table_counts[s])
-            assert np.all(np.diff(self.created_inds[s_temp]) >= 0)
         try:
             assert np.all(np.diff(self.receiver_inds[s][r][:-1]) >= 0)
         except AssertionError:
@@ -372,7 +348,11 @@ class HTEEM():
         if choice == len(probs)-1:
             self.insert_table(t, s, r)
         else:
-            table = table_inds[choice]
+            try:
+                table = table_inds[choice]
+            except IndexError:
+                import pdb
+                pdb.set_trace()
             time_ind = bisect_right(self.change_times, t)
             self.table_counts[s][table][time_ind] += 1
 
@@ -380,20 +360,20 @@ class HTEEM():
     def get_unnormalized_probabilities(self, t, s, r):
         time_bin = bisect_right(self.change_times, t)
         #max_point = bisect_right(self.created_inds[s], time_bin)
-        if max_point == 0:
+        #if max_point == 0:
             #No tables have been created at this time.
-            rec_probs = [1.0]
-            rec_inds = []
-            return  rec_probs, rec_inds
+        #    rec_probs = [1.0]
+        #    rec_inds = []
+        #    return  rec_probs, rec_inds
         
         sticks = [stick[time_bin] for stick in self.sticks[s]]
         probs = np.concatenate([sticks, [1]])
         probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
-        rec_probs = np.concatenate([probs[self.receiver_inds[s][r]], [probs[-1]]])
+        rec_probs = probs[self.receiver_inds[s][r]]
         
         rec_probs[-1] = rec_probs[-1] * self.global_probs[r]
     
-        return rec_probs.tolist(), self.receiver_inds[s][r][:max_rec_point]
+        return rec_probs.tolist(), self.receiver_inds[s][r][:-1]
 
 
     def get_stick(self, s, table, t):
@@ -420,59 +400,19 @@ class HTEEM():
             table_counts = np.array(self.table_counts[s]).sum(axis=1)
             empty_tables = np.where(table_counts == 0)[0]
             for e_t in empty_tables:
-                self.delete_table(s, t)
-            for time_ind in range(len(self.change_times) + 1):
-                created_tables = np.array(np.where(np.array(self.created_inds[s]) == time_ind)[0])
-                empty_tables = created_tables[np.where(np.array([self.table_counts[s][r][time_ind] 
-                                                for r in created_tables]) == 0)[0]]
-                #import pdb
-                #pdb.set_trace()
-                
-                for e_t in empty_tables:
-                    for r, inds in self.receiver_inds[s].items():
+                for r, inds in self.receiver_inds[s].items():
                         inds = np.flatnonzero(inds == e_t)
                         if len(inds) > 0:
                             ind = inds[0]
                             break
-                    else:
-                        import pdb
-                        pdb.set_trace()
-                    if sum(self.table_counts[s][e_t]) == 0:
-                        self.delete_table(s, r, e_t, ind)
-                        empty_tables[empty_tables > e_t] -= 1
-                    else:
-                        #move back the table
-                        #import pdb
-                        #pdb.set_trace()
-                        new_created_ind = next((i for i, x in enumerate(self.table_counts[s][e_t]) if x), None)
-                        #new table in minus 1 because we will be deleting the table behind and moving it forward.
-                        new_table = bisect_right(self.created_inds[s], new_created_ind) - 1
+                self.delete_table(s, r, e_t, ind)
+                empty_tables[empty_tables > e_t] -= 1
 
-                        #move the created_ind up to the next time we
-                        #see a degree for this table
-                        self.move_table_back(s, e_t, new_table)
-                        new_ind = bisect_right(self.receiver_inds[s][r][:-1], new_table) - 1
-
-                        self.receiver_inds[s][r][ind:new_ind] = self.receiver_inds[s][r][ind+1:new_ind+1]
-                        
-                
-                        for r_change in self.receiver_inds[s].keys():
-                            change = (self.receiver_inds[s][r_change] > e_t) & (self.receiver_inds[s][r_change] <= new_table)
-                            self.receiver_inds[s][r_change][change] = self.receiver_inds[s][r_change][change] - 1
-
-                        self.receiver_inds[s][r][new_ind] = new_table
-
-                        self.created_inds[s][new_table] = new_created_ind
-                        self.sticks[s][new_table][:new_created_ind] = 1
-                        empty_tables[(empty_tables > e_t) & (empty_tables <= new_table)] -= 1
-
-                    #try:
-                    #    assert (np.array(self.table_counts[0]).sum(axis=1)[:e_t] != 0).all()
-                    #except AssertionError:
-                    #    import pdb
-                    #    pdb.set_trace()
-
-            assert (np.array(self.table_counts[s]).sum(axis=1) != 0).all()
+            try:
+                assert (np.array(self.table_counts[s]).sum(axis=1) != 0).all()
+            except AssertionError:
+                import pdb
+                pdb.set_trace()
 
 
     def delete_table(self, s, r, table, ind):
@@ -480,7 +420,6 @@ class HTEEM():
         self.global_table_counts[r] -= 1
         self.sticks[s] = self.sticks[s][:table] + self.sticks[s][table+1:]
         self.table_counts[s] = self.table_counts[s][:table] +  self.table_counts[s][table+1:]
-        self.created_inds[s] = self.created_inds[s][:table] + self.created_inds[s][table+1:]
 
         self.receiver_inds[s][r] = np.concatenate([self.receiver_inds[s][r][:ind],
                                                self.receiver_inds[s][r][ind+1:]])
@@ -489,17 +428,6 @@ class HTEEM():
         for r in self.receiver_inds[s].keys():
             change = self.receiver_inds[s][r] > table
             self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
-
-
-    def move_table_back(self, s, old_table, new_table):
-        #Pop the elements
-        assert old_table < new_table
-        tc_list = self.table_counts[s].pop(old_table)
-        self.table_counts[s].insert(new_table, tc_list)
-        s_list = self.sticks[s].pop(old_table)
-        self.sticks[s].insert(new_table, s_list)
-        ct = self.created_inds[s].pop(old_table)
-        self.created_inds[s].insert(new_table, ct)
 
 
     def _remove_customer(self, t, s, r, cython_flag=True):
@@ -556,9 +484,9 @@ class HTEEM():
                 import pdb
                 pdb.set_trace()
 
-            for i in range(len(self.table_counts[s])):
-                begin_ind = self.created_inds[s][i]
-                degree_mats[s][i, begin_ind] -= 1
+            #for i in range(len(self.table_counts[s])):
+                #begin_ind = self.created_inds[s][i]
+                #degree_mats[s][i, begin_ind] -= 1
 
         for s in range(num_senders):
             try:
@@ -593,22 +521,31 @@ class HTEEM():
 
             for s in created_senders:
                 #Calculate log probs for all potential jumps, at the period BEFORE the jump
-                num_created_tables[s] = len([i for i in self.created_inds[s] if i <= ind])
-                probs[s] = np.array([self.get_stick(s, i, ct - 1e-8) for i in range(num_created_tables[s])] + [1])
+                num_tables = len(self.table_counts[s])
+                probs[s] = np.array([self.get_stick(s, i, ct - 1e-8) for i in range(num_tables)] + [1])
                 probs[s][1:] = probs[s][1:] * np.cumprod(1 - probs[s][:-1])
                 log_probs[s] = np.log(probs[s])
 
                 #Add integrated new beta using future table counts.
-                log_probs[s][:-1] += betaln(1 + degree_mats[s][:num_created_tables[s], ind+1], 
-                                    self.theta_s[s] + s_mats[s][:num_created_tables[s], ind+1])
+                log_probs[s][:-1] += betaln(1 + degree_mats[s][:, ind+1], 
+                                    self.theta_s[s] + s_mats[s][:, ind+1])
             
                 #Now, need to add all other likelihood components, i.e. all degrees for
-                #which the receiver did not jump.
-                after_likelihood_components[s] = degree_mats[s][:num_created_tables[s], ind+1] * np.log(np.array(self.sticks[s])[:num_created_tables[s], ind+1])
-                after_likelihood_components[s] += s_mats[s][:num_created_tables[s], ind+1] * np.log(1 - np.array(self.sticks[s])[:num_created_tables[s], ind+1])
+                #which the receiver did not jump. s, i, ind
+                before_inds = np.array([self.get_last_switch(s, t, ind) for t in range(num_tables)])
+                after_inds = np.array([self.get_next_switch(s, t, ind) for t in range(num_tables)])
 
-                before_likelihood_components[s] = degree_mats[s][:num_created_tables[s], ind+1] * np.log(np.array(self.sticks[s])[:num_created_tables[s], ind])
-                before_likelihood_components[s] += s_mats[s][:num_created_tables[s], ind+1] * np.log(1 - np.array(self.sticks[s])[:num_created_tables[s], ind])
+                degrees_before = np.array([degree_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
+                s_before = np.array([s_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
+
+                before_likelihood_components[s] = degrees_before * np.log(np.array(self.sticks[s])[:, ind])
+                before_likelihood_components[s] += s_before * np.log(1 - np.array(self.sticks[s])[:, ind])
+
+                degrees_after = np.array([degree_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
+                s_after = np.array([s_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
+                
+                after_likelihood_components[s] = degrees_after * np.log(np.array(self.sticks[s])[:, ind+1])
+                after_likelihood_components[s] += s_after * np.log(1 - np.array(self.sticks[s])[:, ind+1])
 
             for s in created_senders:
                 for ss in created_senders:
@@ -616,8 +553,6 @@ class HTEEM():
                     log_probs[s] += np.sum(after_likelihood_components[ss])
                 log_probs[s][:-1] -= after_likelihood_components[s]
 
-            #import pdb
-            #pdb.set_trace()
             #First, choose sender:
             integrated_sender_log_probs = [logsumexp(log_probs[s]) for s in created_senders]
             integrated_sender_probs = np.exp(integrated_sender_log_probs - logsumexp(integrated_sender_log_probs))
@@ -627,7 +562,7 @@ class HTEEM():
             #probs = np.exp(log_prob - logsumexp(log_prob))
             probs = np.exp(log_probs[new_s] - logsumexp(log_probs[new_s]))
             #num_total_tables = sum(num_created_tables.values())
-            new_t = np.random.choice(num_created_tables[new_s] + 1, p=probs)
+            new_t = np.random.choice(len(self.table_counts[new_s]) + 1, p=probs)
 
             #temp = np.cumsum([num_created_tables[i] + 1 for i in range(num_senders)])
             #new_s = bisect_right(temp, new_ind)
@@ -641,11 +576,11 @@ class HTEEM():
                 new_choice = old_locs[ind]
 
             if (new_choice[0] == old_locs[ind][0]) and (new_choice[1] == old_locs[ind][1]):
-                if new_choice[1] == num_created_tables[new_s]:
+                if new_choice[1] == len(self.table_counts[s]):
                     #Do nothing, it stayed in the tail
                     continue
                 else:
-                    #Draw the beta
+                    #Draw the beta s, i, ind
                     end_ind = self.get_next_switch(new_s, new_t, ind)
                     if end_ind == -1:
                         end_time = max_time
@@ -666,24 +601,23 @@ class HTEEM():
                 s_del = old_loc[0]
                 t_del = old_loc[1]
                 if s_del != -1:
-                    if t_del < num_created_tables[s_del]:
-                        self.table_change_inds[s_del][t_del].remove(ind)
-                        # redraw the beta that we had deleted.
-                        begin_ind = self.get_last_switch(s_del, t_del, ind)
-                        end_ind = self.get_next_switch(s_del, t_del, ind)
-                        if end_time == -1:
-                            end_time = max_time
+                    self.table_change_inds[s_del][t_del].remove(ind)
+                    # redraw the beta that we had deleted.
+                    begin_ind = self.get_last_switch(s_del, t_del, ind)
+                    end_ind = self.get_next_switch(s_del, t_del, ind)
+                    if end_time == -1:
+                        end_time = max_time
 
-                        try:
-                            new_stick = self.draw_local_beta(degree_mats[s_del][t_del, begin_ind:end_ind].sum(), 
-                                                    s_mats[s_del][t_del, begin_ind:end_ind].sum(), self.theta_s[s_del])
-                        except IndexError:
-                            import pdb
-                            pdb.set_trace()
-                        self.sticks[s_del][t_del][begin_ind:end_ind] = new_stick
+                    try:
+                        new_stick = self.draw_local_beta(degree_mats[s_del][t_del, begin_ind:end_ind].sum(), 
+                                                s_mats[s_del][t_del, begin_ind:end_ind].sum(), self.theta_s[s_del])
+                    except IndexError:
+                        import pdb
+                        pdb.set_trace()
+                    self.sticks[s_del][t_del][begin_ind:end_ind] = new_stick
 
 
-                if new_t == num_created_tables[new_s]:
+                if new_t == len(self.table_counts[s]):
                     #import pdb
                     #pdb.set_trace()
                     self.change_locations[ind] = (-1, -1)
@@ -767,61 +701,62 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
     times.sort()
     
     num_times = len(times)
-    num_recs = len(params.created_rec_times)
-    means = np.zeros((num_times, num_recs))
-    medians = np.zeros((num_times, num_recs))
-    upper_limits = np.zeros((num_times, num_recs))
-    lower_limits = np.zeros((num_times, num_recs))
+    num_recs = len(params['global_sticks'])
+    num_senders = len(params['table_counts'])
+    means = {s: np.zeros((num_times, num_recs)) for s in range(num_senders)}
+    medians = {s: np.zeros((num_times, num_recs)) for s in range(num_senders)}
+    upper_limits = {s: np.zeros((num_times, num_recs)) for s in range(num_senders)}
+    lower_limits = {s: np.zeros((num_times, num_recs)) for s in range(num_senders)}
 
-    for r in range(num_recs):
-        if r % 100 == 0:
-            print(r)
-        stick_list = []
+
+    for s in range(num_senders):
         for params in param_list:
-            try:
-                sticks_ind = np.digitize(times, tp.arrival_times_dict[r], right=False) - 1
-            except ValueError:
-                import pdb
-                pdb.set_trace()
-            #sticks_ind[sticks_ind == len(tp.stick_dict[r])] = len(tp.stick_dict[r]) - 1
-            sticks = np.array(tp.stick_dict[r])[sticks_ind]
-            sticks[times < tp.created_times[r]] = 0
-            stick_list.append(sticks)
-        stick_array = np.array(stick_list)
+            print(s)
+            table_probs = np.array(params['sticks'][s])
+            table_probs[1:, :] = table_probs[1:, :] * np.cumprod(1 - table_probs[:-1, :], axis=0)
+            rec_probs = np.array([table_probs[receiver_inds[s][r][:-1]].sum(axis=0) 
+                                    for r in range(num_recs)])
 
-        upper_limits[:, r] = np.percentile(stick_array, 97.5, axis=0)
-        lower_limits[:, r] = np.percentile(stick_array, 2.5, axis=0)
-        means[:, r] = stick_array.mean(axis=0)
-        medians[:, r] = np.median(stick_array, axis=0)
+            master_inds = np.digitize(times, params['change_times'], right=False) - 1
 
+            rec_prob_list.append(rec_probs[:, master_inds])
 
-    with open(os.path.join(gibbs_dir, stick_name), 'wb') as outfile:
-        pickle.dump({'means': means,
-                     'upper_limits': upper_limits,
-                     'lower_limits': lower_limits,
-                     'medians': medians}, outfile)
+        rec_prob_array = np.array(rec_prob_list)
+        del rec_prob_list
+
+        upper_limits = np.percentile(rec_prob_array, 97.5, axis=-1)
+        lower_limits = np.percentile(rec_prob_array, 2.5, axis=-1)
+        means = stick_array.mean(axis=-1)
+        medians = np.median(stick_array, axis=-1)
 
 
-    probs = np.ones((means.shape[0], means.shape[1] + 1))
-    probs[:, :-1] = means
-    probs[:, 1:] = probs[:, 1:] * (np.cumprod(1 - means, axis=1))
+        with open(os.path.join(gibbs_dir, stick_name), 'wb') as outfile:
+            pickle.dump({'means': means,
+                         'upper_limits': upper_limits,
+                         'lower_limits': lower_limits,
+                         'medians': medians}, outfile)
 
 
-    probs_ll = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
-    probs_ul = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
+        probs = np.ones((means.shape[0], means.shape[1] + 1))
+        probs[:, :-1] = means
+        probs[:, 1:] = probs[:, 1:] * (np.cumprod(1 - means, axis=1))
 
-    probs_ll[:, :-1] = lower_limits
-    probs_ll[:, 1:] = probs_ll[:, 1:] * (np.cumprod(1 - upper_limits, axis=1))
 
-    probs_ul[:, :-1] = upper_limits
-    probs_ul[:, 1:] = probs_ul[:, 1:] * (np.cumprod(1 - lower_limits, axis=1))
+        probs_ll = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
+        probs_ul = np.ones((upper_limits.shape[0], upper_limits.shape[1] + 1))
 
-    with open(os.path.join(gibbs_dir, prob_name), 'wb') as outfile:
-        pickle.dump({'times': times,
-                     'means': probs,
-                     'upper_limits': probs_ul,
-                     'lower_limits': probs_ll,
-                     'medians': medians}, outfile)
+        probs_ll[:, :-1] = lower_limits
+        probs_ll[:, 1:] = probs_ll[:, 1:] * (np.cumprod(1 - upper_limits, axis=1))
+
+        probs_ul[:, :-1] = upper_limits
+        probs_ul[:, 1:] = probs_ul[:, 1:] * (np.cumprod(1 - lower_limits, axis=1))
+
+        with open(os.path.join(gibbs_dir, prob_name), 'wb') as outfile:
+            pickle.dump({'times': times,
+                         'means': probs,
+                         'upper_limits': probs_ul,
+                         'lower_limits': probs_ll,
+                         'medians': medians}, outfile)
 
     return (upper_limits, lower_limits, means), (probs_ul, probs_ll, probs)
 
