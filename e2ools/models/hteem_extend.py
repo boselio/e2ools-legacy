@@ -686,7 +686,7 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
     times = []
 
     save_dirs = [os.path.join(gibbs_dir, '{}'.format(i)) for i in range(num_chains)]
-    tp_master_list = []
+    param_master_list = []
     for save_dir in save_dirs:
         for i in range(int(num_iters_per_chain / 2)):
             save_path = os.path.join(save_dir, '{}.pkl'.format(i))
@@ -724,16 +724,16 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
         rec_prob_array = np.array(rec_prob_list)
         del rec_prob_list
 
-        upper_limits = np.percentile(rec_prob_array, 97.5, axis=-1)
+        upper_limits = np.percentile(rec_prob_array, 97.5, axis=0)
         ul_dict[s] = upper_limits
 
-        lower_limits = np.percentile(rec_prob_array, 2.5, axis=-1)
+        lower_limits = np.percentile(rec_prob_array, 2.5, axis=0)
         ll_dict[s] = lower_limits
 
-        means = stick_array.mean(axis=-1)
+        means = rec_prob_array.mean(axis=0)
         mean_dict[s] = means
 
-        medians = np.median(stick_array, axis=-1)
+        medians = np.median(rec_prob_array, axis=0)
         median_dict[s] = medians
 
 
