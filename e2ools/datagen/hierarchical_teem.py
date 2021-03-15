@@ -62,14 +62,19 @@ def create_hierarchical_temporal_e2_data(alpha=0.1, theta=10,
     interaction_times = np.concatenate([[0], np.cumsum(interaction_interarrival_times)])
 
     max_time = interaction_times[-1]
-    change_times = [np.random.exponential(1/nu)]
-    while True:
-        itime = np.random.exponential(1/nu)
-        if change_times[-1] + itime > max_time:
-            break
-        else:
-            change_times.append(change_times[-1] + itime)
 
+    temp = np.random.exponential(1/nu)
+    if temp < max_time:
+        change_times = [temp]
+
+        while True:
+            itime = np.random.exponential(1/nu)
+            if change_times[-1] + itime > max_time:
+                break
+            else:
+                change_times.append(change_times[-1] + itime)
+    else:
+        change_times = []
     if senders is None:
         sender_sticks, senders = pys.pitman_yor_sticks(alpha_s, theta_s, 
                                                     num_interactions, 
