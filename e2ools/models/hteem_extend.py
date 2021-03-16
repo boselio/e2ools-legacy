@@ -201,9 +201,7 @@ class HTEEM():
 
 
     def _sample_table_configuration(self, interactions, initial=False):
-
-        #import pdb
-        #pdb.set_trace()
+        
         if initial:
             for t, s, receivers in interactions:
                 #import pdb
@@ -271,7 +269,8 @@ class HTEEM():
 
     def sample_ordering(self):
         #Need to resample the ordering
-        
+        new_table_change_inds = defaultdict(dd_list)
+        rev_placement_list = []
         for s, table_sticks in self.sticks.items():
             #Need to calculate the average probability over all time.
             ct_diff = np.diff(np.concatenate([self.change_times, [self.max_time]]))
@@ -284,14 +283,27 @@ class HTEEM():
 
             reverse_new_placements = {v: k for k, v in enumerate(new_ordering)}
             reverse_new_placements[-1] = [-1]
+            
+            for k, v in self.table_change_inds[s].items():
+                new_table_change_inds[s][reverse_new_placements[k]] = v
+
             self.sticks[s] = [self.sticks[s][i] for i in new_ordering]
+
+
             for r in self.receiver_inds[s].keys():
                 self.receiver_inds[s][r] = np.array([reverse_new_placements[t] for t in self.receiver_inds[s][r]])
                 self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
                 self.table_change_inds
 
+
+
             self.table_counts[s] = [self.table_counts[s][i] for i in new_ordering]
 
+            rev_placement_list.append(reverse_new_placements)
+
+        self.table_change_inds[s] = new_table_change_inds
+        self.change_locations = [(s, rev_placement_list[s][r]) for (s, r) in 
+                                                                self.change_locations]
 
     def insert_table(self, t, s, r):
         time_bin = bisect_right(self.change_times, t)
@@ -430,6 +442,22 @@ class HTEEM():
             change = self.receiver_inds[s][r] > table
             self.receiver_inds[s][r][change] = self.receiver_inds[s][r][change] - 1
 
+        tables = list(self.table_change_inds[s].keys())
+        tables.sort()
+        if table in tables:
+            del self.table_change_inds[s][table]
+
+        for change_table in tables:
+            if change_table > table:
+                self.table_change_inds[s][change_table-1] = self.table_change_inds[s][change_table]
+                del self.table_change_inds[s][change_table]
+
+        for i, (change_s, change_table) in enumerate(self.change_locations):
+            if change_s == s:
+                if change_table == table:
+                    self.change_locations[i] = (-1, -1)
+                elif change_table > table:
+                    self.change_locations[i] = (change_s, change_table - 1)
 
     def _remove_customer(self, t, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
@@ -602,7 +630,11 @@ class HTEEM():
                 s_del = old_loc[0]
                 t_del = old_loc[1]
                 if s_del != -1:
-                    self.table_change_inds[s_del][t_del].remove(ind)
+                    try:
+                        self.table_change_inds[s_del][t_del].remove(ind)
+                    except ValueError:
+                        import pdb
+                        pdb.set_trace()
                     # redraw the beta that we had deleted.
                     begin_ind = self.get_last_switch(s_del, t_del, ind)
                     end_ind = self.get_next_switch(s_del, t_del, ind)
