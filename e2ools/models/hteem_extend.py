@@ -288,6 +288,7 @@ class HTEEM():
             for r in self.receiver_inds[s].keys():
                 self.receiver_inds[s][r] = np.array([reverse_new_placements[t] for t in self.receiver_inds[s][r]])
                 self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
+                self.table_change_inds
 
             self.table_counts[s] = [self.table_counts[s][i] for i in new_ordering]
 
@@ -617,7 +618,7 @@ class HTEEM():
                     self.sticks[s_del][t_del][begin_ind:end_ind] = new_stick
 
 
-                if new_t == len(self.table_counts[s]):
+                if new_t == len(self.table_counts[new_s]):
                     #import pdb
                     #pdb.set_trace()
                     self.change_locations[ind] = (-1, -1)
