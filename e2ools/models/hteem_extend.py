@@ -71,7 +71,8 @@ class HTEEM():
         
         #indices of changes, per sender and per table
         self.table_change_inds = defaultdict(dd_list)
-        
+        self.rec_change_inds = defaultdict(dd_list)
+
         #Number of tables in each restaurant
         self.num_tables_in_s = defaultdict(int)
         
@@ -157,7 +158,7 @@ class HTEEM():
                 s_time = time.time()
 
             self._sample_table_configuration(interactions)
-            self._sample_jump_locations(interactions, debug_fixed_locations=debug_fixed_loc)
+            self._sample_jump_locations_all_rec(interactions, debug_fixed_locations=debug_fixed_loc)
 
 
             if update_global_alpha or update_global_theta or update_local_thetas:
@@ -269,6 +270,12 @@ class HTEEM():
 
     def sample_ordering(self):
         #Need to resample the ordering
+        try:
+            self.check_change_locations()
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+
         new_table_change_inds = defaultdict(dd_list)
         rev_placement_list = []
         for s, table_sticks in self.sticks.items():
@@ -301,9 +308,16 @@ class HTEEM():
 
             rev_placement_list.append(reverse_new_placements)
 
-        self.table_change_inds[s] = new_table_change_inds
-        self.change_locations = [(s, rev_placement_list[s][r]) for (s, r) in 
-                                                                self.change_locations]
+        self.table_change_inds = new_table_change_inds
+        #self.change_locations = [(s, rev_placement_list[s][r]) for (s, r) in 
+        #                                                        self.change_locations]
+
+        try:
+            self.check_change_locations()
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+
 
     def insert_table(self, t, s, r):
         time_bin = bisect_right(self.change_times, t)
@@ -324,8 +338,23 @@ class HTEEM():
         self.table_counts[s][insert_point][time_bin] += 1
 
         #self.created_inds[s].insert(insert_point, time_bin)
-        self.sticks[s].append(np.ones(len(self.change_times) + 1) * np.random.beta(1, self.theta_s[s]))
-        #self.sticks[s][insert_point][:time_bin] = 1
+        #The below line is for onle tables changing (commented out, 1 line)
+        #self.sticks[s].append(np.ones(len(self.change_times) + 1) * np.random.beta(1, self.theta_s[s]))
+        
+        #Need to match the table structure with the receiver, draw the relevant sticks, and set table_change_inds.
+        change_inds = self.rec_change_inds[s][r].copy()
+        change_inds.insert(0, 0)
+        change_inds.append(None)
+
+        sticks = np.ones(len(self.change_times) + 1)
+        
+        for begin_ind, end_ind in zip(change_inds[:-1], change_inds[1:]):
+            sticks[begin_ind:end_ind] = np.random.beta(1, self.theta_s[s])
+        
+        self.sticks[s].append(sticks)
+        
+        self.table_change_inds[s][insert_point] = change_inds[1:-1]
+
         self.global_table_counts[r] += 1
 
         for s_temp in range(len(self.receiver_inds)):
@@ -407,7 +436,11 @@ class HTEEM():
 
 
     def remove_empty_tables(self):
-
+        try:
+            self.check_change_locations()
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
         for s in self.table_counts.keys():
             #Find all the empty tables
             table_counts = np.array(self.table_counts[s]).sum(axis=1)
@@ -426,6 +459,11 @@ class HTEEM():
             except AssertionError:
                 import pdb
                 pdb.set_trace()
+        try:
+            self.check_change_locations()
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
 
 
     def delete_table(self, s, r, table, ind):
@@ -452,12 +490,12 @@ class HTEEM():
                 self.table_change_inds[s][change_table-1] = self.table_change_inds[s][change_table]
                 del self.table_change_inds[s][change_table]
 
-        for i, (change_s, change_table) in enumerate(self.change_locations):
-            if change_s == s:
-                if change_table == table:
-                    self.change_locations[i] = (-1, -1)
-                elif change_table > table:
-                    self.change_locations[i] = (change_s, change_table - 1)
+        #for i, (change_s, change_table) in enumerate(self.change_locations):
+        #    if change_s == s:
+        #        if change_table == table:
+        #            self.change_locations[i] = (-1, -1)
+        #        elif change_table > table:
+        #            self.change_locations[i] = (change_s, change_table - 1)
 
     def _remove_customer(self, t, s, r, cython_flag=True):
         #Choose uniformly at random a customer to remove.
@@ -686,6 +724,252 @@ class HTEEM():
                 self.sticks[s][table][:end_ind] = new_stick
 
         return 
+
+
+    def _sample_jump_locations_all_rec(self, interactions, debug_fixed_locations=False):
+
+        try:
+            self.check_change_locations()
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+
+        num_tables = sum([len(v) for k, v in self.table_counts.items()])
+
+        change_times = np.array(self.change_times)
+        old_locs = self.change_locations
+        sorted_inds = change_times.argsort()
+        change_times = change_times[sorted_inds]
+        old_locs = np.array(old_locs)[sorted_inds]
+
+        interaction_times = np.array([interaction[0] for interaction in interactions])
+        max_time = interactions[-1][0]
+        #created_set = set()
+
+        permuted_inds = np.random.permutation(len(change_times))
+        
+        # calculate all degrees between change times for all receivers
+        degree_mats = {}
+        s_mats = {}
+
+        #beta_mat = np.zeros((num_tables, len(change_times) + 1))
+        #table_inds = {}
+        #counter = 0
+
+        num_senders = len(self.created_sender_times)
+
+        for s in range(len(self.table_counts)):
+            degree_mats[s] =  np.array(self.table_counts[s])
+            s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
+                                                    np.zeros((1, len(self.change_times) + 1))])
+
+
+        for s in range(num_senders):
+            assert (degree_mats[s] >= 0).all()
+            assert (s_mats[s] >= 0).all()
+
+        for ind in permuted_inds:
+        #Need to calculate, the likelihood of each stick if that receiver
+        #was not chosen.
+            ct = self.change_times[ind]
+            if ind > 0:
+                begin_time = self.change_times[ind-1]
+            else:
+                begin_time = 0
+            try:
+                end_time = self.change_times[ind+1]
+            except IndexError:
+                end_time = interaction_times[-1] + 1
+
+            num_created_tables = {}
+            rec_probs = {}
+            log_rec_probs = {}
+            non_zero_recs = {}
+
+            before_rec_likelihood_components = {}
+            after_rec_likelihood_components = {}
+            #Calculate likelihood of each jumps
+            created_senders = [s for (s, t) in self.created_sender_times.items() if t < ct]
+
+            num_recs = len(self.global_sticks)
+
+            for s in created_senders:
+                #Calculate log probs for all potential jumps, at the period BEFORE the jump
+                num_tables = len(self.table_counts[s])
+                table_probs = np.array([self.get_stick(s, i, ct - 1e-8) for i in range(num_tables)] + [1])
+                table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
+
+                rec_probs[s] = np.concatenate([np.array([table_probs[self.receiver_inds[s][r][:-1]].sum(axis=0) 
+                                for r in range(num_recs)]), [table_probs[-1]]])
+                
+
+                assert np.isclose(1, rec_probs[s].sum())
+
+                non_zero_recs[s] = np.where(rec_probs[s] > 0)[0]
+
+                log_rec_probs[s] = np.log(rec_probs[s][non_zero_recs[s]])
+
+                before_inds = np.array([self.get_last_switch(s, t, ind) for t in range(num_tables)])
+                after_inds = np.array([self.get_next_switch(s, t, ind) for t in range(num_tables)])
+
+                #Now, need to add all other likelihood components, i.e. all degrees for
+                #which the receiver did not jump. s, i, ind
+
+                degrees_before = np.array([degree_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
+                s_before = np.array([s_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
+
+                before_table_likelihood_components = degrees_before * np.log(np.array(self.sticks[s])[:, ind])
+                before_table_likelihood_components += s_before * np.log(1 - np.array(self.sticks[s])[:, ind])
+                before_rec_likelihood_components[s] = np.array([before_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
+                                for r in range(num_recs)])
+
+                degrees_after = np.array([degree_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
+                s_after = np.array([s_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
+                
+                #Add integrated new beta using future table counts.
+                integrated_table_counts = betaln(1 + degrees_after, self.theta_s[s] + s_after)
+                integrated_rec_counts = np.array([integrated_table_counts[self.receiver_inds[s][r][:-1]].sum(axis=0) 
+                                for r in range(num_recs)])
+
+                log_rec_probs[s][:-1] += integrated_rec_counts[non_zero_recs[s][:-1]]
+
+
+                after_table_likelihood_components = degrees_after * np.log(np.array(self.sticks[s])[:, ind+1])
+                after_table_likelihood_components += s_after * np.log(1 - np.array(self.sticks[s])[:, ind+1])
+
+                after_rec_likelihood_components[s] = np.array([after_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
+                                for r in range(num_recs)])
+
+                #import pdb
+                #pdb.set_trace()
+            for s in created_senders:
+                for ss in created_senders:
+                    log_rec_probs[s] += np.sum(before_rec_likelihood_components[ss])
+                    log_rec_probs[s] += np.sum(after_rec_likelihood_components[ss])
+                log_rec_probs[s][:-1] -= after_rec_likelihood_components[s][non_zero_recs[s][:-1]]
+
+            #import pdb
+            #pdb.set_trace()
+            #First, choose sender:
+            integrated_sender_log_probs = [logsumexp(log_rec_probs[s]) for s in created_senders]
+            integrated_sender_probs = np.exp(integrated_sender_log_probs - logsumexp(integrated_sender_log_probs))
+            new_s = np.random.choice(created_senders, p=integrated_sender_probs)
+
+            #log_prob = np.concatenate([log_probs[s] for s in range(num_senders)])
+            #probs = np.exp(log_prob - logsumexp(log_prob))
+            probs = np.exp(log_rec_probs[new_s] - logsumexp(log_rec_probs[new_s]))
+            #num_total_tables = sum(num_created_tables.values())
+            new_r = np.random.choice(len(non_zero_recs[new_s]), p=probs)
+
+            #temp = np.cumsum([num_created_tables[i] + 1 for i in range(num_senders)])
+            #new_s = bisect_right(temp, new_ind)
+            #if new_s > 0:
+            #    new_t = new_ind - temp[new_s - 1]
+
+            new_choice = (new_s, new_r)
+
+            #Delete this next section of code for production:
+            if debug_fixed_locations:
+                new_choice = old_locs[ind]
+
+            if (new_choice[0] == old_locs[ind][0]) and (new_choice[1] == old_locs[ind][1]):
+                if new_choice[1] == len(self.table_counts[s]):
+                    #Do nothing, it stayed in the tail
+                    continue
+                else:
+                    #Draw the beta s, i, ind
+                    for table in self.receiver_inds[new_s][new_r][:-1]:
+                        begin_ind = self.get_last_switch(new_s, table, ind)
+                        end_ind = self.get_next_switch(new_s, table, ind)
+                        
+                        new_stick = self.draw_local_beta(degree_mats[new_s][table, ind+1:end_ind].sum(), 
+                                                    s_mats[new_s][table, ind+1:end_ind].sum(), self.theta_s[new_s])
+                        self.sticks[new_s][table][ind+1:end_ind] = new_stick
+
+                        new_stick = self.draw_local_beta(degree_mats[new_s][table, begin_ind:ind+1].sum(), 
+                                                    s_mats[new_s][table, begin_ind:ind+1].sum(), self.theta_s[new_s])
+                        self.sticks[new_s][table][begin_ind:ind+1] = new_stick
+
+
+            else:
+                old_loc = old_locs[ind]
+                s_del = old_loc[0]
+                r_del = old_loc[1]
+
+                if s_del != -1:
+                    self.rec_change_inds[s_del][r_del].remove(ind)
+                    
+                    for table in self.receiver_inds[s_del][r_del][:-1]:
+                        try:
+                            self.table_change_inds[s_del][table].remove(ind)
+                        except ValueError:
+                            import pdb
+                            pdb.set_trace()
+
+                        # redraw the beta that we had deleted.
+                        begin_ind = self.get_last_switch(s_del, table, ind)
+                        end_ind = self.get_next_switch(s_del, table, ind)
+
+                        new_stick = self.draw_local_beta(degree_mats[s_del][table, begin_ind:end_ind].sum(), 
+                                                s_mats[s_del][table, begin_ind:end_ind].sum(), self.theta_s[s_del])
+
+                        self.sticks[s_del][table][begin_ind:end_ind] = new_stick
+
+
+                if new_r == len(non_zero_recs[new_s]):
+                    #import pdb
+                    #pdb.set_trace()
+                    self.change_locations[ind] = (-1, -1)
+
+                else:
+                    self.change_locations[ind] = (new_s, new_r)
+
+                    insert_ind = bisect_right(self.rec_change_inds[new_s][new_r], ind)
+                    self.rec_change_inds[new_s][new_r].insert(insert_ind, ind)
+
+                    for table in self.receiver_inds[new_s][new_r][:-1]:
+                        insert_ind = bisect_right(self.table_change_inds[new_s][table], ind)
+                        self.table_change_inds[new_s][table].insert(insert_ind, ind)
+                    # Draw the beta backward
+                        begin_ind = self.get_last_switch(new_s, table, ind)
+                        end_ind = self.get_next_switch(new_s, table, ind)
+                    
+                        new_stick = self.draw_local_beta(degree_mats[new_s][table, ind+1:end_ind].sum(), 
+                                                s_mats[new_s][table, ind+1:end_ind].sum(), self.theta_s[new_s])
+
+                        self.sticks[new_s][table][ind+1:end_ind] = new_stick
+
+                        new_stick = self.draw_local_beta(degree_mats[new_s][table, begin_ind:ind+1].sum(), 
+                                                s_mats[new_s][table, begin_ind:ind+1].sum(), self.theta_s[new_s])
+                        self.sticks[new_s][table][begin_ind:ind+1] = new_stick
+
+        for s in range(num_senders):
+            for table in range(len(self.table_counts[s])):
+                #draw beta
+                end_ind = self.get_next_switch(s, table, 0)
+
+                new_stick = self.draw_local_beta(degree_mats[s][table,:end_ind].sum(),
+                                        s_mats[s][table,:end_ind].sum(), self.theta_s[s])
+                self.sticks[s][table][:end_ind] = new_stick
+
+        try:
+            self.check_change_locations()
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+        return 
+
+
+    def check_change_locations(self):
+        num_changes = len(self.change_times)
+
+        for i in range(num_changes):
+            s, r = self.change_locations[i]
+            if s == -1:
+                continue
+            for table in self.receiver_inds[s][r][:-1]:
+                assert i in self.table_change_inds[s][table], "{}, {}, {}, {}".format(s, r, table, i)
+
 
 
     def get_next_switch(self, s, i, ind):
