@@ -767,6 +767,12 @@ class HTEEM():
         for s in range(num_senders):
             assert (degree_mats[s] >= 0).all()
             assert (s_mats[s] >= 0).all()
+            for i in range(s_mats[s].shape[1]):
+                try:
+                    assert (np.diff(s_mats[s][:, i]) <= 0).all()
+                except AssertionError:
+                    import pdb
+                    pdb.set_trace()
 
         for ind in permuted_inds:
         #Need to calculate, the likelihood of each stick if that receiver
@@ -793,6 +799,9 @@ class HTEEM():
 
             num_recs = len(self.global_sticks)
 
+            if ind == 2:
+                import pdb
+                pdb.set_trace()
             for s in created_senders:
                 #Calculate log probs for all potential jumps, at the period BEFORE the jump
                 num_tables = len(self.table_counts[s])
@@ -833,15 +842,16 @@ class HTEEM():
 
                 log_rec_probs[s][:-1] += integrated_rec_counts[non_zero_recs[s][:-1]]
 
-
-                after_table_likelihood_components = degrees_after * np.log(np.array(self.sticks[s])[:, ind+1])
-                after_table_likelihood_components += s_after * np.log(1 - np.array(self.sticks[s])[:, ind+1])
+                #Use ind and not ind+1 because this is the component of the likelihood when the stick does not change.
+                after_table_likelihood_components = degrees_after * np.log(np.array(self.sticks[s])[:, ind])
+                after_table_likelihood_components += s_after * np.log(1 - np.array(self.sticks[s])[:, ind])
 
                 after_rec_likelihood_components[s] = np.array([after_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
                                 for r in range(num_recs)])
 
-                #import pdb
-                #pdb.set_trace()
+                if ind == 2:
+                    import pdb
+                    pdb.set_trace()
             for s in created_senders:
                 for ss in created_senders:
                     log_rec_probs[s] += np.sum(before_rec_likelihood_components[ss])
