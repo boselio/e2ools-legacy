@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.stats as st
 
 
 def hamiltonian_monte_carlo(n_samples, negative_log_prob, dVdq, initial_position, num_steps=10,

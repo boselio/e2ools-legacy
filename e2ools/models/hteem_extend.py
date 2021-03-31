@@ -131,7 +131,7 @@ class HTEEM():
 
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
                     sample_parameters=True, update_global_alpha=False, update_global_theta=False,
-                    update_local_thetas=False, global_alpha_priors=(1,1), globasl_theta_priors=(10,10),
+                    update_local_thetas=False, global_alpha_priors=(1,1), global_theta_priors=(10,10),
                     local_theta_priors=(2,5), update_interarrival_times=False, seed=None, 
                     debug_fixed_loc=False):
         
@@ -176,9 +176,16 @@ class HTEEM():
                 
                 if update_local_thetas:
                     for s in range(self.s_size):
-                        sticks = np.concatenate(self.sticks[s])
-                        rs = np.array([i for (i, a) in sticks[s] for _ in a])
-                        theta_s, accepted = sample_theta_hmc(self.theta_s[s], 0, sticks, rs,
+                        sticks = [s[0] for s in self.sticks[s]]
+                        recs = [i for i in range(len(sticks))]
+                        for rec, inds in self.rec_change_inds[s].items():
+                            for i in inds:
+                                for table in self.receiver_inds[s][rec][:-1]:
+                                    sticks.append(self.sticks[s][table][i])
+                                    recs.append(rec)
+
+                        theta_s, accepted = sample_theta_hmc(self.theta_s[s], 0, np.array(sticks), 
+                                    np.array(recs),
                                     k_prior=local_theta_priors[0], 
                                     theta_prior=local_theta_priors[1])
                         self.theta_s[s] = theta_s
@@ -194,6 +201,7 @@ class HTEEM():
                         'sticks': self.sticks,
                         'change_times': change_times,
                         'table_counts': self.table_counts,
+                        'receiver_change_inds': self.rec_change_inds
                         }
             if t >= num_times / 2:
                 file_dir = save_dir / '{}.pkl'.format(t - int(num_times / 2))
@@ -799,9 +807,9 @@ class HTEEM():
 
             num_recs = len(self.global_sticks)
 
-            if ind == 2:
-                import pdb
-                pdb.set_trace()
+            #if ind == 5:
+            #    import pdb
+            #    pdb.set_trace()
             for s in created_senders:
                 #Calculate log probs for all potential jumps, at the period BEFORE the jump
                 num_tables = len(self.table_counts[s])
@@ -837,6 +845,7 @@ class HTEEM():
                 
                 #Add integrated new beta using future table counts.
                 integrated_table_counts = betaln(1 + degrees_after, self.theta_s[s] + s_after)
+                integrated_table_counts = integrated_table_counts - betaln(1, self.theta_s[s])
                 integrated_rec_counts = np.array([integrated_table_counts[self.receiver_inds[s][r][:-1]].sum(axis=0) 
                                 for r in range(num_recs)])
 
@@ -849,9 +858,9 @@ class HTEEM():
                 after_rec_likelihood_components[s] = np.array([after_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
                                 for r in range(num_recs)])
 
-                if ind == 2:
-                    import pdb
-                    pdb.set_trace()
+                #if ind == 5:
+                #    import pdb
+                #    pdb.set_trace()
             for s in created_senders:
                 for ss in created_senders:
                     log_rec_probs[s] += np.sum(before_rec_likelihood_components[ss])
@@ -956,8 +965,7 @@ class HTEEM():
         for s in range(num_senders):
             for table in range(len(self.table_counts[s])):
                 #draw beta
-                end_ind = self.get_next_switch(s, table, 0)
-
+                end_ind = self.get_next_switch(s, table, -1)
                 new_stick = self.draw_local_beta(degree_mats[s][table,:end_ind].sum(),
                                         s_mats[s][table,:end_ind].sum(), self.theta_s[s])
                 self.sticks[s][table][:end_ind] = new_stick
@@ -986,17 +994,15 @@ class HTEEM():
         after_ind = bisect_right(self.table_change_inds[s][i], ind)
         if after_ind == len(self.table_change_inds[s][i]):
             return None
-        return self.table_change_inds[s][i][after_ind]
+        return self.table_change_inds[s][i][after_ind] + 1
         
 
     def get_last_switch(self, s, i, ind):
-        before_ind = bisect_left(self.table_change_inds[s][i], ind)
-        if before_ind == 0:
+        before_ind = bisect_left(self.table_change_inds[s][i], ind) - 1
+        if before_ind == -1:
             return 0
-        elif before_ind == len(self.table_change_inds[s][i]):
-            before_ind = -1
 
-        return self.table_change_inds[s][i][before_ind] + 1
+        return self.table_change_inds[s][i][before_ind] 
             
 
     def draw_local_beta(self, d, s, theta):
