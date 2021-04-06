@@ -102,6 +102,10 @@ class HTEEM():
         self.r_set = set([r for interaction in interactions for r in interaction[2]])
         self.r_size = len(self.r_set)
 
+        self.r_set_by_sender = {}
+        for s in self.s_set:
+            self.r_set_by_sender[s] = set([r for interaction in interactions if interaction[1] == s for r in interaction[-1]])
+
         self.created_sender_times = {}
         for (t, s, receivers) in interactions:
             if s not in self.created_sender_times:
@@ -157,7 +161,12 @@ class HTEEM():
                 print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
                 s_time = time.time()
 
-            self._sample_table_configuration(interactions)
+            if t % 10 == 0 and t != 0:
+                self._sample_table_configuration(interactions, sample_order=True)
+
+            else:
+                self._sample_table_configuration(interactions, sample_order=True)
+
             self._sample_jump_locations_all_rec(interactions, debug_fixed_locations=debug_fixed_loc)
 
 
@@ -209,7 +218,7 @@ class HTEEM():
                     pickle.dump(params, outfile)
 
 
-    def _sample_table_configuration(self, interactions, initial=False):
+    def _sample_table_configuration(self, interactions, sample_order=False, initial=False):
         
         if initial:
             for t, s, receivers in interactions:
@@ -262,9 +271,11 @@ class HTEEM():
                     self._add_customer(t, s, r)
 
             self.remove_empty_tables()
-            #self.sample_ordering()
-            #sample_ordering()
 
+            if sample_order:
+                accepted, log_prob = self.sample_ordering(interactions)
+                print(accepted, log_prob)
+            
         #Update global sticks
         reverse_counts = np.cumsum(self.global_table_counts[::-1])[::-1]
         reverse_counts = np.concatenate([reverse_counts[1:], [0]])
@@ -276,7 +287,7 @@ class HTEEM():
         self.global_probs[1:] = self.global_probs[1:] * np.cumprod(1 - self.global_probs[:-1])
 
 
-    def sample_ordering(self):
+    def sample_ordering(self, interactions):
         #Need to resample the ordering
         try:
             self.check_change_locations()
@@ -284,47 +295,144 @@ class HTEEM():
             import pdb
             pdb.set_trace()
 
-        new_table_change_inds = defaultdict(dd_list)
         rev_placement_list = []
+
+        #Calculate the likelihood of particular people jumping (old).
+        old_change_probs = np.zeros(len(self.change_locations))
+
+        for i, (s, r) in enumerate(self.change_locations):
+            if s != -1:
+                table_sticks = [sticks[i] for sticks in self.sticks[s]]
+
+                probs = np.concatenate([table_sticks, [1]])
+                probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1], axis=0)
+                change_prob = probs[self.receiver_inds[s][r][:-1]].sum()
+
+            else:
+                change_prob = 0
+                for s_prime, table_sticks in self.sticks.items():
+                    table_sticks = [sticks[i] for sticks in self.sticks[s_prime]]
+                    #Need to calculate the average probability over all time.
+                    probs = np.concatenate([table_sticks, [1]])
+                    probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1], axis=0)
+                    change_prob += probs[-1]
+
+            old_change_probs[i] = change_prob
+
+        accepted_list = []
+        log_prob_list = []
+
         for s, table_sticks in self.sticks.items():
+            new_table_change_inds = dd_list()
+            new_sticks = [np.zeros(len(self.change_times)+1) for t in range(len(table_sticks))]
+            new_receiver_inds = df_rec_inds2()
+            new_table_counts = []
+
+            log_accept = 0
             #Need to calculate the average probability over all time.
-            ct_diff = np.diff(np.concatenate([self.change_times, [self.max_time]]))
             probs = np.array(table_sticks)
             probs[1:, :] = probs[1:, :] * np.cumprod(1 - probs[:-1, :], axis=0)
 
+            if len(self.change_times) == 0:
+                ct_diff = self.max_time
+            else:
+                ct_diff = np.diff(np.concatenate([[0], self.change_times, [self.max_time]]))
+
             scores = (probs * ct_diff).sum(axis=1) / self.max_time 
             scores = scores / scores.sum()
+            #import pdb
+            #pdb.set_trace()
             new_ordering = np.random.choice(len(scores), size=len(scores), replace=False, p=scores)
+            scores_ordered = scores[new_ordering]
+            scores_ordered[1:] = scores_ordered[1:] / (1 - np.cumsum(scores_ordered[:-1]))
+            temp = scores_ordered.copy()
+            #Transition prob from old to new
+            log_accept = -np.log(scores_ordered).sum()
 
             reverse_new_placements = {v: k for k, v in enumerate(new_ordering)}
-            reverse_new_placements[-1] = [-1]
+            reverse_new_placements[-1] = -1
             
             for k, v in self.table_change_inds[s].items():
-                new_table_change_inds[s][reverse_new_placements[k]] = v
-
-            self.sticks[s] = [self.sticks[s][i] for i in new_ordering]
+                new_table_change_inds[reverse_new_placements[k]] = v
 
 
             for r in self.receiver_inds[s].keys():
-                self.receiver_inds[s][r] = np.array([reverse_new_placements[t] for t in self.receiver_inds[s][r]])
-                self.receiver_inds[s][r][:-1] = np.sort(self.receiver_inds[s][r][:-1])
-                self.table_change_inds
+                new_receiver_inds[r] = np.array([reverse_new_placements[t] for t in self.receiver_inds[s][r]])
+                new_receiver_inds[r][:-1] = np.sort(new_receiver_inds[r][:-1])
+                
+            new_table_counts = [self.table_counts[s][i] for i in new_ordering]
 
-
-
-            self.table_counts[s] = [self.table_counts[s][i] for i in new_ordering]
+            degree_mat =  np.array(new_table_counts)
+            s_mat = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mat), axis=0))[1:, :], 
+                                                    np.zeros((1, len(self.change_times) + 1))])
 
             rev_placement_list.append(reverse_new_placements)
 
-        self.table_change_inds = new_table_change_inds
-        #self.change_locations = [(s, rev_placement_list[s][r]) for (s, r) in 
-        #                                                        self.change_locations]
+            for table in range(len(new_table_counts)):
+                #draw beta
+                begin_end = 0
+                end_ind = self.get_next_switch(s, table, -1)
+                new_stick = self.draw_local_beta(degree_mat[table,:end_ind].sum(),
+                                        s_mat[table,:end_ind].sum(), self.theta_s[s])
+                new_sticks[table][:end_ind] = new_stick
 
-        try:
-            self.check_change_locations()
-        except AssertionError:
-            import pdb
-            pdb.set_trace()
+                while end_ind is not None:
+                    begin_ind = end_ind
+                    end_ind = self.get_next_switch(s, table, begin_ind)
+                    new_stick = self.draw_local_beta(degree_mat[table,begin_ind:end_ind].sum(),
+                                        s_mat[table,begin_ind:end_ind].sum(), self.theta_s[s])
+                    new_sticks[table][begin_ind:end_ind] = new_stick
+
+            probs = np.array(new_sticks)
+            probs[1:, :] = probs[1:, :] * np.cumprod(1 - probs[:-1, :], axis=0)
+
+            if len(self.change_times) == 0:
+                ct_diff = self.max_time
+            else:
+                ct_diff = np.diff(np.concatenate([[0], self.change_times, [self.max_time]]))
+
+            scores = (probs * ct_diff).sum(axis=1) / self.max_time 
+            scores = scores / scores.sum()
+            scores_ordered = np.array([scores[reverse_new_placements[i]] for i in range(len(scores))])
+            scores_ordered[1:] = scores_ordered[1:] / (1 - np.cumsum(scores_ordered[:-1]))
+            
+            log_accept = log_accept + np.log(scores_ordered).sum()
+
+            for i, (change_s, change_r) in enumerate(self.change_locations):
+                if change_s != s:
+                    continue 
+
+                table_sticks = [sticks[i] for sticks in new_sticks]
+
+                probs = np.concatenate([table_sticks, [1]])
+                probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1], axis=0)
+                change_prob = probs[new_receiver_inds[change_r][:-1]].sum()
+
+                try:
+                    log_accept += np.log(change_prob)
+                    log_accept -= np.log(old_change_probs[i])
+                except FloatingPointError:
+                    import pdb
+                    pdb.set_trace()
+            #import pdb
+            #pdb.set_trace()
+            if np.random.rand() < np.exp(log_accept):
+                #import pdb
+                #pdb.set_trace()
+                self.table_change_inds[s] = new_table_change_inds
+                self.sticks[s] = new_sticks
+                self.receiver_inds[s] = new_receiver_inds
+                self.table_counts[s] = new_table_counts
+                accepted = True
+
+
+            else:
+                accepted = False
+
+            accepted_list.append(accepted)
+            log_prob_list.append(log_accept)
+
+        return accepted_list, log_prob_list
 
 
     def insert_table(self, t, s, r):
@@ -425,12 +533,6 @@ class HTEEM():
     
         return rec_probs.tolist(), self.receiver_inds[s][r][:-1]
 
-
-    def get_stick(self, s, table, t):
-        time_bin = bisect_right(self.change_times, t)
-        stick = self.sticks[s][table][time_bin]
-        
-        return stick
 
 
     def get_table_counts(self, s, table, t):
@@ -742,6 +844,12 @@ class HTEEM():
             import pdb
             pdb.set_trace()
 
+        try:
+            self.check_degrees(interactions)
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+
         num_tables = sum([len(v) for k, v in self.table_counts.items()])
 
         change_times = np.array(self.change_times)
@@ -813,7 +921,8 @@ class HTEEM():
             for s in created_senders:
                 #Calculate log probs for all potential jumps, at the period BEFORE the jump
                 num_tables = len(self.table_counts[s])
-                table_probs = np.array([self.get_stick(s, i, ct - 1e-8) for i in range(num_tables)] + [1])
+                table_sticks = np.array([self.sticks[s][table][ind] for table in range(num_tables)])
+                table_probs = np.concatenate([table_sticks,  [1]])
                 table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
 
                 rec_probs[s] = np.concatenate([np.array([table_probs[self.receiver_inds[s][r][:-1]].sum(axis=0) 
@@ -877,9 +986,17 @@ class HTEEM():
             #log_prob = np.concatenate([log_probs[s] for s in range(num_senders)])
             #probs = np.exp(log_prob - logsumexp(log_prob))
             probs = np.exp(log_rec_probs[new_s] - logsumexp(log_rec_probs[new_s]))
-            #num_total_tables = sum(num_created_tables.values())
-            new_r = np.random.choice(len(non_zero_recs[new_s]), p=probs)
 
+            #num_total_tables = sum(num_created_tables.values())
+            new_ind = np.random.choice(len(non_zero_recs[new_s]), p=probs)
+            new_r = non_zero_recs[new_s][new_ind]
+
+            if new_r != len(self.r_set):
+                try:
+                    assert new_r in self.r_set_by_sender[new_s]
+                except AssertionError:
+                    import pdb
+                    pdb.set_trace()
             #temp = np.cumsum([num_created_tables[i] + 1 for i in range(num_senders)])
             #new_s = bisect_right(temp, new_ind)
             #if new_s > 0:
@@ -935,7 +1052,7 @@ class HTEEM():
                         self.sticks[s_del][table][begin_ind:end_ind] = new_stick
 
 
-                if new_r == len(non_zero_recs[new_s]):
+                if new_r == len(self.r_set):
                     #import pdb
                     #pdb.set_trace()
                     self.change_locations[ind] = (-1, -1)
@@ -989,6 +1106,29 @@ class HTEEM():
                 assert i in self.table_change_inds[s][table], "{}, {}, {}, {}".format(s, r, table, i)
 
 
+    def check_degrees(self, interactions):
+        change_times = np.concatenate([[0], self.change_times, [interactions[-1][0] + 1]])
+        interaction_times = [interaction[0] for interaction in interactions]
+        bins = np.digitize(interaction_times, change_times) - 1
+        true_count_dict = {s: np.zeros((self.r_size, len(self.change_times) + 1)) for s in range(len(self.sticks))}
+
+        for time_bin, interaction in zip(bins, interactions):
+            s = interaction[1]
+            for r in interaction[-1]:
+                true_count_dict[s][r, time_bin] += 1
+
+        test_count_dict = {s: np.zeros((self.r_size, len(self.change_times) + 1)) for s in range(len(self.sticks))}
+        for s in range(len(self.sticks)):
+            for r in range(self.r_size):
+                rec_table_counts = np.array([self.table_counts[s][table] for table in self.receiver_inds[s][r][:-1]]).sum(axis=0)
+                test_count_dict[s][r] = rec_table_counts
+
+                try:
+                    assert (true_count_dict[s][r] == test_count_dict[s][r]).all()
+                except AssertionError:
+                    print(s,r)
+
+        
 
     def get_next_switch(self, s, i, ind):
         after_ind = bisect_right(self.table_change_inds[s][i], ind)

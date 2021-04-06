@@ -571,6 +571,9 @@ def sample_alpha_hmc(alpha, theta, V_array, r_array, alpha_prior, beta_prior,
     talpha_array, accepted, rates, U = hamiltonian_monte_carlo(1, neg_log_prob, dVdq, talpha, num_steps, step_size, scale=scale)
 
     alpha_prime = expit(talpha_array[-1])
+    if np.isnan(alpha_prime):
+        accepted = False
+        alpha_prime = alpha
 
     return alpha_prime, accepted
 
@@ -609,6 +612,10 @@ def sample_theta_hmc(theta, alpha, V_array, r_array, k_prior, theta_prior,
                                                                 num_steps, step_size, scale=scale)
 
     theta_prime = np.exp(ttheta_array[-1])
+
+    if np.isnan(theta_prime):
+        accepted = False
+        theta_prime = theta
 
     return theta_prime, accepted
 
