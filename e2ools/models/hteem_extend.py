@@ -274,7 +274,7 @@ class HTEEM():
 
             if sample_order:
                 accepted, log_prob = self.sample_ordering(interactions)
-                print(accepted, log_prob)
+                #print(accepted, log_prob)
             
         #Update global sticks
         reverse_counts = np.cumsum(self.global_table_counts[::-1])[::-1]
@@ -473,15 +473,15 @@ class HTEEM():
 
         self.global_table_counts[r] += 1
 
-        for s_temp in range(len(self.receiver_inds)):
-            temp = np.sort(np.concatenate([l[:-1] for l in self.receiver_inds[s].values()]))
-            assert (temp == np.arange(len(temp))).all()
-            assert len(temp) == len(self.table_counts[s])
-        try:
-            assert np.all(np.diff(self.receiver_inds[s][r][:-1]) >= 0)
-        except AssertionError:
-            import pdb
-            pdb.set_trace()
+        #for s_temp in range(len(self.receiver_inds)):
+        #    temp = np.sort(np.concatenate([l[:-1] for l in self.receiver_inds[s].values()]))
+        #    assert (temp == np.arange(len(temp))).all()
+        #    assert len(temp) == len(self.table_counts[s])
+        #try:
+        #    assert np.all(np.diff(self.receiver_inds[s][r][:-1]) >= 0)
+        #except AssertionError:
+        #    import pdb
+        #    pdb.set_trace()
 
 
     def _add_customer(self, t, s, r, cython_flag=True):
@@ -838,17 +838,17 @@ class HTEEM():
 
     def _sample_jump_locations_all_rec(self, interactions, debug_fixed_locations=False):
 
-        try:
-            self.check_change_locations()
-        except AssertionError:
-            import pdb
-            pdb.set_trace()
+        #try:
+        #    self.check_change_locations()
+        #except AssertionError:
+        #    import pdb
+        #    pdb.set_trace()
 
-        try:
-            self.check_degrees(interactions)
-        except AssertionError:
-            import pdb
-            pdb.set_trace()
+        #try:
+        #    self.check_degrees(interactions)
+        #except AssertionError:
+        #    import pdb
+        #    pdb.set_trace()
 
         num_tables = sum([len(v) for k, v in self.table_counts.items()])
 
@@ -880,15 +880,15 @@ class HTEEM():
                                                     np.zeros((1, len(self.change_times) + 1))])
 
 
-        for s in range(num_senders):
-            assert (degree_mats[s] >= 0).all()
-            assert (s_mats[s] >= 0).all()
-            for i in range(s_mats[s].shape[1]):
-                try:
-                    assert (np.diff(s_mats[s][:, i]) <= 0).all()
-                except AssertionError:
-                    import pdb
-                    pdb.set_trace()
+        #for s in range(num_senders):
+            #assert (degree_mats[s] >= 0).all()
+            #assert (s_mats[s] >= 0).all()
+            #for i in range(s_mats[s].shape[1]):
+            #    try:
+            #        assert (np.diff(s_mats[s][:, i]) <= 0).all()
+            #    except AssertionError:
+            #        import pdb
+            #        pdb.set_trace()
 
         for ind in permuted_inds:
         #Need to calculate, the likelihood of each stick if that receiver
@@ -918,18 +918,30 @@ class HTEEM():
             #if ind == 5:
             #    import pdb
             #    pdb.set_trace()
+            total_likelihood_components = 0
             for s in created_senders:
                 #Calculate log probs for all potential jumps, at the period BEFORE the jump
+                table_labels, table_inds = zip(*[(k, i) for (k, v) in self.receiver_inds[s].items() for i in v[:-1]])
+                table_labels = np.array(table_labels)
+                sorted_inds = np.argsort(table_inds)
+                table_labels = table_labels[sorted_inds]
+                
                 num_tables = len(self.table_counts[s])
                 table_sticks = np.array([self.sticks[s][table][ind] for table in range(num_tables)])
                 table_probs = np.concatenate([table_sticks,  [1]])
                 table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
 
-                rec_probs[s] = np.concatenate([np.array([table_probs[self.receiver_inds[s][r][:-1]].sum(axis=0) 
-                                for r in range(num_recs)]), [table_probs[-1]]])
-                
+                #rec_probs[s] = np.concatenate([np.array([table_probs[self.receiver_inds[s][r][:-1]].sum(axis=0) 
+                #                for r in range(num_recs)]), [table_probs[-1]]])
+                #Second way:
+                rec_probs[s] = np.bincount(table_labels, table_probs[:-1], minlength=num_recs + 1)
+                rec_probs[s][-1] = table_probs[-1]
 
-                assert np.isclose(1, rec_probs[s].sum())
+                #temp = np.bincount(table_labels, table_probs[:-1], minlength=num_recs + 1)
+                #temp[-1] = table_probs[-1]
+
+                #assert (temp == rec_probs[s]).all()
+                #assert np.isclose(1, rec_probs[s].sum())
 
                 non_zero_recs[s] = np.where(rec_probs[s] > 0)[0]
 
@@ -946,8 +958,14 @@ class HTEEM():
 
                 before_table_likelihood_components = degrees_before * np.log(np.array(self.sticks[s])[:, ind])
                 before_table_likelihood_components += s_before * np.log(1 - np.array(self.sticks[s])[:, ind])
-                before_rec_likelihood_components[s] = np.array([before_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
-                                for r in range(num_recs)])
+                #before_rec_likelihood_components[s] = np.array([before_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
+                #                for r in range(num_recs)])
+
+                before_rec_likelihood_components[s] = np.bincount(table_labels, before_table_likelihood_components, minlength=num_recs)
+                before_rec_likelihood_components[s] =  before_rec_likelihood_components[s][non_zero_recs[s][:-1]]
+
+                #before_rec_likelihood_components[s] = before_rec_likelihood_components[s][non_zero_recs[s][:-1]]
+                #assert (temp == before_rec_likelihood_components[s]).all()
 
                 degrees_after = np.array([degree_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
                 s_after = np.array([s_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
@@ -955,8 +973,10 @@ class HTEEM():
                 #Add integrated new beta using future table counts.
                 integrated_table_counts = betaln(1 + degrees_after, self.theta_s[s] + s_after)
                 integrated_table_counts = integrated_table_counts - betaln(1, self.theta_s[s])
-                integrated_rec_counts = np.array([integrated_table_counts[self.receiver_inds[s][r][:-1]].sum(axis=0) 
-                                for r in range(num_recs)])
+                #integrated_rec_counts = np.array([integrated_table_counts[self.receiver_inds[s][r][:-1]].sum(axis=0) 
+                #                for r in range(num_recs)])
+
+                integrated_rec_counts = np.bincount(table_labels, integrated_table_counts, minlength=num_recs)
 
                 log_rec_probs[s][:-1] += integrated_rec_counts[non_zero_recs[s][:-1]]
 
@@ -964,18 +984,27 @@ class HTEEM():
                 after_table_likelihood_components = degrees_after * np.log(np.array(self.sticks[s])[:, ind])
                 after_table_likelihood_components += s_after * np.log(1 - np.array(self.sticks[s])[:, ind])
 
-                after_rec_likelihood_components[s] = np.array([after_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
-                                for r in range(num_recs)])
+                #after_rec_likelihood_components[s] = np.array([after_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
+                #                for r in range(num_recs)])
+
+                after_rec_likelihood_components[s] = np.bincount(table_labels, after_table_likelihood_components, minlength=num_recs)
+                after_rec_likelihood_components[s] = after_rec_likelihood_components[s][non_zero_recs[s][:-1]]
+
+                total_likelihood_components += after_rec_likelihood_components[s].sum() + before_rec_likelihood_components[s].sum()
+                #after_rec_likelihood_components[s] = after_rec_likelihood_components[s][non_zero_recs[:-1]]
+                #assert (temp == after_rec_likelihood_components[s]).all()
 
                 #if ind == 5:
                 #    import pdb
                 #    pdb.set_trace()
             for s in created_senders:
-                for ss in created_senders:
-                    log_rec_probs[s] += np.sum(before_rec_likelihood_components[ss])
-                    log_rec_probs[s] += np.sum(after_rec_likelihood_components[ss])
-                log_rec_probs[s][:-1] -= after_rec_likelihood_components[s][non_zero_recs[s][:-1]]
 
+                #for ss in created_senders:
+                #    log_rec_probs[s] += np.sum(before_rec_likelihood_components[ss])
+                #    log_rec_probs[s] += np.sum(after_rec_likelihood_components[ss])
+                log_rec_probs[s][:-1] -= after_rec_likelihood_components[s]
+                log_rec_probs[s] += total_likelihood_components
+                
             #import pdb
             #pdb.set_trace()
             #First, choose sender:
