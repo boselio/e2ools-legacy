@@ -137,7 +137,7 @@ class HTEEM():
                     sample_parameters=True, update_global_alpha=False, update_global_theta=False,
                     update_local_thetas=False, global_alpha_priors=(1,1), global_theta_priors=(10,10),
                     local_theta_priors=(2,5), update_interarrival_times=False, seed=None, 
-                    debug_fixed_loc=False):
+                    debug_fixed_loc=False, print_iter=50):
         
         np.random.seed(seed)
         max_time = interactions[-1][0]
@@ -156,7 +156,7 @@ class HTEEM():
         s_time = time.time()
         for t in range(num_times):
             
-            if t % 50 == 0:
+            if t % print_iter == 0:
                 e_time = time.time()
                 print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
                 s_time = time.time()
