@@ -27,6 +27,7 @@ from scipy.special import betaln, logsumexp
 import pathlib
 from concurrent.futures import ProcessPoolExecutor
 from .teem import sample_alpha_hmc, sample_theta_hmc
+from scipy.stats import expon
 
 def dd_list():
     return defaultdict(list)
@@ -39,7 +40,7 @@ def df_rec_inds2():
 
 
 class HTEEM(): 
-    def __init__(self, nu, alpha=None, theta=None, theta_s=None, 
+    def __init__(self, nu, sigma_at=None, alpha=None, theta=None, theta_s=None, 
                     num_chains=4, num_iters_per_chain=500, 
                     holdout=100, alpha_hyperparams=(5, 5),
                     theta_hyperparams=(10, 10), lower_alpha_hyperparams=(5,5),
@@ -52,7 +53,11 @@ class HTEEM():
         self.alpha = alpha
         self.theta = theta
         self.theta_s = theta_s
-
+        self.nu = nu
+        if sigma_at is None:
+            self.sigma_at = self.nu / 10
+        else:
+            self.sigma_at = sigma_at
         
     def initialize_state(self, interactions, change_times):
 
@@ -136,16 +141,16 @@ class HTEEM():
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
                     sample_parameters=True, update_global_alpha=False, update_global_theta=False,
                     update_local_thetas=False, global_alpha_priors=(1,1), global_theta_priors=(10,10),
-                    local_theta_priors=(2,5), update_interarrival_times=False, seed=None, 
+                    local_theta_priors=(2,5), update_interarrival_times=False, num_iter_itime=10, seed=None, 
                     debug_fixed_loc=False, print_iter=50):
         
         np.random.seed(seed)
         max_time = interactions[-1][0]
 
         if change_times is None:
-            change_times = [np.random.exponential(1 / nu)]
+            change_times = [np.random.exponential(1 / self.nu)]
             while True:
-                itime = np.random.exponential(1 / nu)
+                itime = np.random.exponential(1 / self.nu)
                 if change_times[-1] + itime > max_time:
                     break
                 else:
@@ -161,14 +166,8 @@ class HTEEM():
                 print('Iteration {}, took {} seconds.'.format(t, e_time - s_time))
                 s_time = time.time()
 
-            if t % 10 == 0 and t != 0:
-                self._sample_table_configuration(interactions, sample_order=True)
-
-            else:
-                self._sample_table_configuration(interactions, sample_order=True)
-
+            self._sample_table_configuration(interactions, sample_order=True)
             self._sample_jump_locations_all_rec(interactions, debug_fixed_locations=debug_fixed_loc)
-
 
             if update_global_alpha or update_global_theta or update_local_thetas:
                 if update_global_alpha:
@@ -200,8 +199,8 @@ class HTEEM():
                         self.theta_s[s] = theta_s
 
 
-            if update_interarrival_times:
-                self.sample_interarrival_times()
+            if update_interarrival_times and t % num_iter_itime == 0:
+                self.sample_interarrival_times(interactions)
                 
             params = {'alpha': self.alpha, 'theta': self.theta,
                         'theta_s': self.theta_s,
@@ -1016,9 +1015,113 @@ class HTEEM():
         return np.random.beta(d + 1, s + theta)
 
 
-    def sample_interarrival_times(self):
-        pass
+    def evaluate_itime_likelihood(self, interactions, s, r, begin_time, end_time, change_time, change_ind, return_degrees=False):
+        ll = 0
+        interaction_times = [interaction[0] for interaction in interactions]
 
+        begin_ind = bisect_left(interaction_times, begin_time)
+        proposal_ind = bisect_right(interaction_times, change_time)
+        end_ind = bisect_right(interaction_times, end_time)
+        #sample the table distribution
+        #table_probs = np.array([stick[change_ind] for stick in self.sticks[s]])
+        #table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
+
+        new_table_counts = np.zeros((len(self.table_counts[s]), 2))
+
+        for interaction in interactions[begin_ind:proposal_ind]:
+            if interaction[1] != s:
+                continue
+            t = interaction[0]
+            for r in interaction[-1]:
+                probs, table_inds = self.get_unnormalized_probabilities(t, s, r)
+                choice = choice_discrete_unnormalized(probs[:-1], np.random.rand())
+                try:
+                    table = table_inds[choice]
+                except IndexError:
+                    import pdb
+                    pdb.set_trace()
+                
+                new_table_counts[table][0] += 1
+
+        for interaction in interactions[proposal_ind:end_ind]:
+            s = interaction[1]
+            if interaction[1] != s:
+                continue
+            t = interaction[0]
+            for r in interaction[-1]:
+                probs, table_inds = self.get_unnormalized_probabilities(t, s, r)
+                choice = choice_discrete_unnormalized(probs[:-1], np.random.rand())
+                try:
+                    table = table_inds[choice]
+                except IndexError:
+                    import pdb
+                    pdb.set_trace()
+                new_table_counts[table][1] += 1
+
+        s_counts = np.vstack([np.flipud(np.cumsum(np.flipud(new_table_counts), axis=0))[1:, :], 
+                                                    np.zeros((1, 2))])
+
+        sticks = np.array(self.sticks[s])[:, change_ind:change_ind+2]
+
+        ll = (new_table_counts * np.log(sticks) + s_counts * np.log(1 - sticks)).sum()
+
+        ll += expon.logpdf(change_time - begin_time, scale=1/self.nu)
+        ll += expon.logpdf(end_time - change_time, scale=1/self.nu)
+
+        if return_degrees:
+            return ll, new_table_counts
+        else:
+            return ll
+
+
+    def sample_interarrival_times(self, interactions):
+        
+        accepted = []
+        log_acceptance_probs = []
+        for i, at in enumerate(self.change_times):
+            s_change, r_change = self.change_locations[i]
+
+            if s_change == -1:
+                accepted.append(False)
+                log_acceptance_probs.append(-1)
+
+            if i == 0:
+                begin_time = 0
+            else:
+                begin_time = self.change_times[i-1]
+            if i == len(self.change_times) - 1:
+                end_time = interactions[-1][0]
+            else:
+                end_time = self.change_times[i+1]
+
+            ll_old = self.evaluate_itime_likelihood(interactions, s_change, r_change, 
+                                                            begin_time, end_time, at, i)
+
+            at_new = at + self.sigma_at * np.random.randn()
+
+            if (at_new < begin_time) or (at_new > end_time):
+                accepted.append(False)
+                log_acceptance_probs.append(-1)
+                continue
+
+            ll_new, new_table_counts = self.evaluate_itime_likelihood(interactions, s_change, r_change,
+                                                            begin_time, end_time, at_new, i,
+                                                            return_degrees=True)
+            
+            log_acceptance_probs.append(ll_new - ll_old)
+            print(log_acceptance_probs)
+            if np.log(np.random.rand()) < ll_new - ll_old:
+                print(at_new)
+                accepted.append(True)
+                self.change_times[i] = at_new
+                for table in range(len(self.table_counts[s_change])):
+                    self.table_counts[s_change][table][i:i+2] = new_table_counts[table, :]
+
+            else:
+                accepted.append(False)
+
+        return accepted, log_acceptance_probs
+        
 
 def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_chain, 
                                          prob_name='prob_avgs.pkl'):

@@ -712,6 +712,7 @@ def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, si
         r = int(nodes[i])
         if r == -1:
             accepted.append(False)
+            log_acceptance_probs.append(-1)
             continue
         if i == 0:
             begin_time = 0
@@ -729,19 +730,23 @@ def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, si
 
         if at_new < temporal_probs.created_times[r]:
             accepted.append(False)
+            log_acceptance_probs.append(-1)
             continue
 
         if i < len(arrival_times) - 1 and i > 0:
             if at_new <= arrival_times[i-1] or at_new >= arrival_times[i+1]:
                 accepted.append(False)
+                log_acceptance_probs.append(-1)
                 continue
         elif i == len(arrival_times) - 1:
             if at_new <= arrival_times[i-1]:
                 accepted.append(False)
+                log_acceptance_probs.append(-1)
                 continue
         elif i == 0:
             if at_new >= arrival_times[i+1] or at_new < 0:
                 accepted.append(False)
+                log_acceptance_probs.append(-1)
                 continue
 
         tp_candidate = deepcopy(temporal_probs)
