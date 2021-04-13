@@ -102,9 +102,9 @@ class HTEEM():
         self.r_set = set([r for interaction in interactions for r in interaction[2]])
         self.r_size = len(self.r_set)
 
-        self.r_set_by_sender = {}
-        for s in self.s_set:
-            self.r_set_by_sender[s] = set([r for interaction in interactions if interaction[1] == s for r in interaction[-1]])
+        #self.r_set_by_sender = {}
+        #for s in self.s_set:
+        #   self.r_set_by_sender[s] = set([r for interaction in interactions if interaction[1] == s for r in interaction[-1]])
 
         self.created_sender_times = {}
         for (t, s, receivers) in interactions:
@@ -218,6 +218,56 @@ class HTEEM():
                     pickle.dump(params, outfile)
 
 
+    def infer(self, master_save_dir, interactions, nu=None, num_chains=4, num_iters_per_chain=500, 
+                    alpha=None, theta=None, theta_local=None, update_alpha=True, 
+                    update_theta=True, update_theta_local=True, change_times=None, 
+                    update_interarrival_times=True):   
+
+
+        rc_func = self.partial(self.run_chain, nu=nu, num_times=num_iters_per_chain, 
+                        interactions=interactions, alpha=alpha, theta=theta, theta_local=theta_local,
+                        update_theta=update_theta, update_alpha=update_alpha, update_theta_local=update_theta_local,
+                      change_times=change_times, update_interarrival_times=update_interarrival_times)
+
+        if not pathlib.Path(master_save_dir).is_dir():
+            pathlib.Path(master_save_dir).mkdir(parents=True)
+
+
+        if change_times is not None:
+            with (pathlib.Path(master_save_dir) / 'initial_change_times.pkl').open('wb') as outfile:
+                pickle.dump(change_times, outfile)
+            
+        save_dirs = [pathlib.Path(master_save_dir) / '{}'.format(i) 
+                     for i in range(num_chains)]
+
+        for sd in save_dirs:
+            if not sd.is_dir():
+                sd.mkdir(parents=True)
+
+        start_time = time.time()
+        print('Beginning Inference:')
+        tp_lists = []
+
+        with ProcessPoolExecutor() as executor:
+            for _ in executor.map(rc_func, save_dirs):
+                continue
+        end_time = time.time()
+
+        print('Took {} minutes.'.format((end_time - start_time) / 60))
+
+
+        #print('Calculating posterior estimates:')
+        #start_time = time.time()
+
+        #((upper_limits, lower_limits, means),
+        #(probs_ul, probs_ll, probs)) = get_limits_and_means_different_times(save_dir, num_chains, num_iters_per_chain)
+        #end_time = time.time()
+
+        #print('Took {} minutes.'.format((end_time - start_time) / 60))
+
+        return
+
+
     def _sample_table_configuration(self, interactions, sample_order=False, initial=False):
         
         if initial:
@@ -308,16 +358,16 @@ class HTEEM():
                 probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1], axis=0)
                 change_prob = probs[self.receiver_inds[s][r][:-1]].sum()
 
-            else:
-                change_prob = 0
-                for s_prime, table_sticks in self.sticks.items():
-                    table_sticks = [sticks[i] for sticks in self.sticks[s_prime]]
-                    #Need to calculate the average probability over all time.
-                    probs = np.concatenate([table_sticks, [1]])
-                    probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1], axis=0)
-                    change_prob += probs[-1]
+            #else:
+            #    change_prob = 0
+            #    for s_prime, table_sticks in self.sticks.items():
+            #        table_sticks = [sticks[i] for sticks in self.sticks[s_prime]]
+            #        #Need to calculate the average probability over all time.
+            #        probs = np.concatenate([table_sticks, [1]])
+            #        probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1], axis=0)
+            #        change_prob += probs[-1]
 
-            old_change_probs[i] = change_prob
+                old_change_probs[i] = change_prob
 
         accepted_list = []
         log_prob_list = []
@@ -398,22 +448,20 @@ class HTEEM():
             
             log_accept = log_accept + np.log(scores_ordered).sum()
 
-            for i, (change_s, change_r) in enumerate(self.change_locations):
-                if change_s != s:
-                    continue 
+            for change_r, l in self.rec_change_inds[s].items():
+                for i in l:
+                    table_sticks = [sticks[i] for sticks in new_sticks]
 
-                table_sticks = [sticks[i] for sticks in new_sticks]
+                    probs = np.concatenate([table_sticks, [1]])
+                    probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1], axis=0)
+                    change_prob = probs[new_receiver_inds[change_r][:-1]].sum()
 
-                probs = np.concatenate([table_sticks, [1]])
-                probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1], axis=0)
-                change_prob = probs[new_receiver_inds[change_r][:-1]].sum()
-
-                try:
-                    log_accept += np.log(change_prob)
-                    log_accept -= np.log(old_change_probs[i])
-                except FloatingPointError:
-                    import pdb
-                    pdb.set_trace()
+                    try:
+                        log_accept += np.log(change_prob)
+                        log_accept -= np.log(old_change_probs[i])
+                    except FloatingPointError:
+                        import pdb
+                        pdb.set_trace()
             #import pdb
             #pdb.set_trace()
             if np.random.rand() < np.exp(log_accept):
@@ -626,216 +674,6 @@ class HTEEM():
             pdb.set_trace()
 
 
-    def _sample_jump_locations(self, interactions, debug_fixed_locations=False):
-
-        num_tables = sum([len(v) for k, v in self.table_counts.items()])
-
-        change_times = np.array(self.change_times)
-        old_locs = self.change_locations
-        sorted_inds = change_times.argsort()
-        change_times = change_times[sorted_inds]
-        old_locs = np.array(old_locs)[sorted_inds]
-
-        interaction_times = np.array([interaction[0] for interaction in interactions])
-        max_time = interactions[-1][0]
-        #created_set = set()
-
-        permuted_inds = np.random.permutation(len(change_times))
-        
-        # calculate all degrees between change times for all receivers
-        degree_mats = {}
-        s_mats = {}
-
-        #beta_mat = np.zeros((num_tables, len(change_times) + 1))
-        #table_inds = {}
-        #counter = 0
-
-        num_senders = len(self.created_sender_times)
-
-        for s in range(len(self.table_counts)):
-            degree_mats[s] =  np.array(self.table_counts[s])
-            try:
-                s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
-                                                    np.zeros((1, len(self.change_times) + 1))])
-            except ValueError:
-                import pdb
-                pdb.set_trace()
-
-            #for i in range(len(self.table_counts[s])):
-                #begin_ind = self.created_inds[s][i]
-                #degree_mats[s][i, begin_ind] -= 1
-
-        for s in range(num_senders):
-            try:
-                assert (degree_mats[s] >= 0).all()
-            except AssertionError:
-                import pdb
-                pdb.set_trace()
-            assert (s_mats[s] >= 0).all()
-
-        for ind in permuted_inds:
-        #Need to calculate, the likelihood of each stick if that receiver
-        #was not chosen.
-
-            ct = self.change_times[ind]
-            if ind > 0:
-                begin_time = self.change_times[ind-1]
-            else:
-                begin_time = 0
-            try:
-                end_time = self.change_times[ind+1]
-            except IndexError:
-                end_time = interaction_times[-1] + 1
-
-            num_created_tables = {}
-            probs = {}
-            log_probs = {}
-
-            before_likelihood_components = {}
-            after_likelihood_components = {}
-            #Calculate likelihood of each jumps
-            created_senders = [s for (s, t) in self.created_sender_times.items() if t < ct]
-
-            for s in created_senders:
-                #Calculate log probs for all potential jumps, at the period BEFORE the jump
-                num_tables = len(self.table_counts[s])
-                probs[s] = np.array([self.get_stick(s, i, ct - 1e-8) for i in range(num_tables)] + [1])
-                probs[s][1:] = probs[s][1:] * np.cumprod(1 - probs[s][:-1])
-                log_probs[s] = np.log(probs[s])
-
-                #Add integrated new beta using future table counts.
-                log_probs[s][:-1] += betaln(1 + degree_mats[s][:, ind+1], 
-                                    self.theta_s[s] + s_mats[s][:, ind+1])
-            
-                #Now, need to add all other likelihood components, i.e. all degrees for
-                #which the receiver did not jump. s, i, ind
-                before_inds = np.array([self.get_last_switch(s, t, ind) for t in range(num_tables)])
-                after_inds = np.array([self.get_next_switch(s, t, ind) for t in range(num_tables)])
-
-                degrees_before = np.array([degree_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
-                s_before = np.array([s_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
-
-                before_likelihood_components[s] = degrees_before * np.log(np.array(self.sticks[s])[:, ind])
-                before_likelihood_components[s] += s_before * np.log(1 - np.array(self.sticks[s])[:, ind])
-
-                degrees_after = np.array([degree_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
-                s_after = np.array([s_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
-                
-                after_likelihood_components[s] = degrees_after * np.log(np.array(self.sticks[s])[:, ind+1])
-                after_likelihood_components[s] += s_after * np.log(1 - np.array(self.sticks[s])[:, ind+1])
-
-            for s in created_senders:
-                for ss in created_senders:
-                    log_probs[s] += np.sum(before_likelihood_components[ss])
-                    log_probs[s] += np.sum(after_likelihood_components[ss])
-                log_probs[s][:-1] -= after_likelihood_components[s]
-
-            #First, choose sender:
-            integrated_sender_log_probs = [logsumexp(log_probs[s]) for s in created_senders]
-            integrated_sender_probs = np.exp(integrated_sender_log_probs - logsumexp(integrated_sender_log_probs))
-            new_s = np.random.choice(created_senders, p=integrated_sender_probs)
-
-            #log_prob = np.concatenate([log_probs[s] for s in range(num_senders)])
-            #probs = np.exp(log_prob - logsumexp(log_prob))
-            probs = np.exp(log_probs[new_s] - logsumexp(log_probs[new_s]))
-            #num_total_tables = sum(num_created_tables.values())
-            new_t = np.random.choice(len(self.table_counts[new_s]) + 1, p=probs)
-
-            #temp = np.cumsum([num_created_tables[i] + 1 for i in range(num_senders)])
-            #new_s = bisect_right(temp, new_ind)
-            #if new_s > 0:
-            #    new_t = new_ind - temp[new_s - 1]
-
-            new_choice = (new_s, new_t)
-
-            #Delete this next section of code for production:
-            if debug_fixed_locations:
-                new_choice = old_locs[ind]
-
-            if (new_choice[0] == old_locs[ind][0]) and (new_choice[1] == old_locs[ind][1]):
-                if new_choice[1] == len(self.table_counts[s]):
-                    #Do nothing, it stayed in the tail
-                    continue
-                else:
-                    #Draw the beta s, i, ind
-                    end_ind = self.get_next_switch(new_s, new_t, ind)
-                    if end_ind == -1:
-                        end_time = max_time
-                    begin_ind = self.get_last_switch(new_s, new_t, ind)
-                    end_ind = bisect_right(interaction_times, end_time)
-
-                    new_stick = self.draw_local_beta(degree_mats[new_s][new_t, ind+1:end_ind].sum(), 
-                                                s_mats[new_s][new_t, ind+1:end_ind].sum(), self.theta_s[new_s])
-                    self.sticks[new_s][new_t][ind+1:end_ind] = new_stick
-
-                    new_stick = self.draw_local_beta(degree_mats[new_s][new_t, begin_ind:ind+1].sum(), 
-                                                s_mats[new_s][new_t, begin_ind:ind+1].sum(), self.theta_s[new_s])
-                    self.sticks[new_s][new_t][begin_ind:ind+1] = new_stick
-
-
-            else:
-                old_loc = old_locs[ind]
-                s_del = old_loc[0]
-                t_del = old_loc[1]
-                if s_del != -1:
-                    try:
-                        self.table_change_inds[s_del][t_del].remove(ind)
-                    except ValueError:
-                        import pdb
-                        pdb.set_trace()
-                    # redraw the beta that we had deleted.
-                    begin_ind = self.get_last_switch(s_del, t_del, ind)
-                    end_ind = self.get_next_switch(s_del, t_del, ind)
-                    if end_time == -1:
-                        end_time = max_time
-
-                    try:
-                        new_stick = self.draw_local_beta(degree_mats[s_del][t_del, begin_ind:end_ind].sum(), 
-                                                s_mats[s_del][t_del, begin_ind:end_ind].sum(), self.theta_s[s_del])
-                    except IndexError:
-                        import pdb
-                        pdb.set_trace()
-                    self.sticks[s_del][t_del][begin_ind:end_ind] = new_stick
-
-
-                if new_t == len(self.table_counts[new_s]):
-                    #import pdb
-                    #pdb.set_trace()
-                    self.change_locations[ind] = (-1, -1)
-
-                else:
-                    self.change_locations[ind] = (new_s, new_t)
-                    insert_ind = bisect_right(self.table_change_inds[new_s][new_t], ind)
-                    self.table_change_inds[new_s][new_t].insert(insert_ind, ind)
-                    # Draw the beta backward
-                    begin_ind = self.get_last_switch(new_s, new_t, ind)
-                    end_ind = self.get_next_switch(new_s, new_t, ind)
-                    
-                    try:
-                        new_stick = self.draw_local_beta(degree_mats[new_s][new_t, ind+1:end_ind].sum(), 
-                                                s_mats[new_s][new_t, ind+1:end_ind].sum(), self.theta_s[new_s])
-                    except IndexError:
-                        import pdb
-                        pdb.set_trace()
-
-                    self.sticks[new_s][new_t][ind+1:end_ind] = new_stick
-
-                    new_stick = self.draw_local_beta(degree_mats[new_s][new_t, begin_ind:ind+1].sum(), 
-                                                s_mats[new_s][new_t, begin_ind:ind+1].sum(), self.theta_s[new_s])
-                    self.sticks[new_s][new_t][begin_ind:ind+1] = new_stick
-
-        for s in range(num_senders):
-            for table in range(len(self.table_counts[s])):
-                #draw beta
-                end_ind = self.get_next_switch(s, table, 0)
-
-                new_stick = self.draw_local_beta(degree_mats[s][table,:end_ind].sum(),
-                                        s_mats[s][table,:end_ind].sum(), self.theta_s[s])
-                self.sticks[s][table][:end_ind] = new_stick
-
-        return 
-
-
     def _sample_jump_locations_all_rec(self, interactions, debug_fixed_locations=False):
 
         #try:
@@ -1020,12 +858,12 @@ class HTEEM():
             new_ind = np.random.choice(len(non_zero_recs[new_s]), p=probs)
             new_r = non_zero_recs[new_s][new_ind]
 
-            if new_r != len(self.r_set):
-                try:
-                    assert new_r in self.r_set_by_sender[new_s]
-                except AssertionError:
-                    import pdb
-                    pdb.set_trace()
+            #if new_r != len(self.r_set):
+                #try:
+                #    assert new_r in self.r_set_by_sender[new_s]
+                #except AssertionError:
+                #    import pdb
+                #    pdb.set_trace()
             #temp = np.cumsum([num_created_tables[i] + 1 for i in range(num_senders)])
             #new_s = bisect_right(temp, new_ind)
             #if new_s > 0:
@@ -1183,7 +1021,7 @@ class HTEEM():
 
 
 def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_chain, 
-                                         rob_name='prob_avgs.pkl'):
+                                         prob_name='prob_avgs.pkl'):
 
     times = []
 
@@ -1197,9 +1035,9 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
                 times.append(params.change_times)
                 param_master_list.append(params)
     
-    times.append(params.created_rec_times)
     times = np.concatenate(times)
     times = np.unique(times)
+    times.concatenate([times, [0]])
     times.sort()
     
     num_times = len(times)
@@ -1212,17 +1050,25 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
 
 
     for s in range(num_senders):
+        rec_prob_list = []
         for params in param_list:
-            print(s)
+            receiver_inds = params['receiver_inds']
+            table_labels, table_inds = zip(*[(k, i) for (k, v) in receiver_inds[s].items() for i in v[:-1]])
+            table_labels = np.array(table_labels)
+            sorted_inds = np.argsort(table_inds)
+            table_labels = table_labels[sorted_inds]
+
             table_probs = np.array(params['sticks'][s])
             table_probs[1:, :] = table_probs[1:, :] * np.cumprod(1 - table_probs[:-1, :], axis=0)
-            rec_probs = np.array([table_probs[receiver_inds[s][r][:-1]].sum(axis=0) 
-                                    for r in range(num_recs)])
+        
+            rec_probs = np.zeros((num_recs, num_times))
+            for i in range(num_times):
+                rec_probs[:, i] = np.bincount(table_labels, table_probs[:, i], minlength=num_recs)
 
             master_inds = np.digitize(times, params['change_times'], right=False) - 1
 
             rec_prob_list.append(rec_probs[:, master_inds])
-
+            
         rec_prob_array = np.array(rec_prob_list)
         del rec_prob_list
 
@@ -1239,6 +1085,7 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
         median_dict[s] = medians
 
 
+
     with open(os.path.join(gibbs_dir, prob_name), 'wb') as outfile:
         pickle.dump({'means': mean_dict,
                      'upper_limits': ul_dict,
@@ -1246,7 +1093,7 @@ def get_limits_and_means_different_times(gibbs_dir, num_chains, num_iters_per_ch
                      'medians': median_dict}, 
                      outfile)
 
-    return (upper_limits, lower_limits, means), (probs_ul, probs_ll, probs)
+    return (ul_dict, ll_dict, mean_dict)
 
 
 def read_files(save_dir=None, num_chains=4, num_iters_per_chain=500):
