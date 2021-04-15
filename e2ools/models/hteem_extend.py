@@ -1015,7 +1015,7 @@ class HTEEM():
         return np.random.beta(d + 1, s + theta)
 
 
-    def evaluate_itime_likelihood(self, interactions, s, r, begin_time, end_time, change_time, change_ind, return_degrees=False):
+    def evaluate_itime_likelihood(self, interactions, s_change, r_change, begin_time, end_time, change_time, change_ind, return_degrees=False):
         ll = 0
         interaction_times = [interaction[0] for interaction in interactions]
 
@@ -1029,11 +1029,11 @@ class HTEEM():
         new_table_counts = np.zeros((len(self.table_counts[s]), 2))
 
         for interaction in interactions[begin_ind:proposal_ind]:
-            if interaction[1] != s:
+            if interaction[1] != s_change:
                 continue
             t = interaction[0]
             for r in interaction[-1]:
-                probs, table_inds = self.get_unnormalized_probabilities(t, s, r)
+                probs, table_inds = self.get_unnormalized_probabilities(t, s_change, r)
                 choice = choice_discrete_unnormalized(probs[:-1], np.random.rand())
                 try:
                     table = table_inds[choice]
@@ -1044,24 +1044,24 @@ class HTEEM():
                 new_table_counts[table][0] += 1
 
         for interaction in interactions[proposal_ind:end_ind]:
-            s = interaction[1]
-            if interaction[1] != s:
+            if interaction[1] != s_change:
                 continue
             t = interaction[0]
             for r in interaction[-1]:
                 probs, table_inds = self.get_unnormalized_probabilities(t, s, r)
                 choice = choice_discrete_unnormalized(probs[:-1], np.random.rand())
-                try:
-                    table = table_inds[choice]
-                except IndexError:
-                    import pdb
-                    pdb.set_trace()
+                table = table_inds[choice]
+
                 new_table_counts[table][1] += 1
 
         s_counts = np.vstack([np.flipud(np.cumsum(np.flipud(new_table_counts), axis=0))[1:, :], 
                                                     np.zeros((1, 2))])
 
-        sticks = np.array(self.sticks[s])[:, change_ind:change_ind+2]
+        try:
+            sticks = np.array(self.sticks[s])[:, change_ind:change_ind+2]
+        except IndexError:
+            import pdb
+            pdb.set_trace()
 
         ll = (new_table_counts * np.log(sticks) + s_counts * np.log(1 - sticks)).sum()
 
@@ -1084,6 +1084,7 @@ class HTEEM():
             if s_change == -1:
                 accepted.append(False)
                 log_acceptance_probs.append(-1)
+                continue
 
             if i == 0:
                 begin_time = 0
