@@ -139,8 +139,8 @@ class HTEEM():
 
 
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
-                    sample_parameters=True, update_global_alpha=False, update_global_theta=False,
-                    update_local_thetas=False, global_alpha_priors=(1,1), global_theta_priors=(10,10),
+                    sample_parameters=True, update_global_alpha=True, update_global_theta=True,
+                    update_local_thetas=True, global_alpha_priors=(1,1), global_theta_priors=(10,10),
                     local_theta_priors=(2,5), update_interarrival_times=False, num_iter_itime=10, seed=None, 
                     debug_fixed_loc=False, print_iter=50):
         
@@ -217,16 +217,19 @@ class HTEEM():
                     pickle.dump(params, outfile)
 
 
-    def infer(self, master_save_dir, interactions, nu=None, num_chains=4, num_iters_per_chain=500, 
-                    alpha=None, theta=None, theta_local=None, update_alpha=True, 
-                    update_theta=True, update_theta_local=True, change_times=None, 
-                    update_interarrival_times=True):   
+    def infer(self, master_save_dir, interactions, num_chains=4, num_iters_per_chain=500, 
+                    update_global_alpha=True, update_global_theta=True, update_local_thetas=True, 
+                    change_times=None, update_interarrival_times=False, global_theta_priors=(10,10),
+                    global_alpha_priors=(1,1), local_theta_priors=(2,5), num_iter_itime=10, print_iter=50):   
 
 
-        rc_func = self.partial(self.run_chain, nu=nu, num_times=num_iters_per_chain, 
-                        interactions=interactions, alpha=alpha, theta=theta, theta_local=theta_local,
-                        update_theta=update_theta, update_alpha=update_alpha, update_theta_local=update_theta_local,
-                      change_times=change_times, update_interarrival_times=update_interarrival_times)
+        rc_func = partial(self.run_chain, num_times=num_iters_per_chain, 
+                        interactions=interactions, global_alpha_priors=global_alpha_priors,
+                        update_local_thetas=update_local_thetas, update_global_alpha=update_global_alpha, 
+                        update_global_theta=update_global_theta, global_theta_priors=global_theta_priors,
+                        local_theta_priors=local_theta_priors, num_iter_itime=num_iter_itime,
+                        print_iter=print_iter, change_times=change_times, 
+                        update_interarrival_times=update_interarrival_times)
 
         if not pathlib.Path(master_save_dir).is_dir():
             pathlib.Path(master_save_dir).mkdir(parents=True)
