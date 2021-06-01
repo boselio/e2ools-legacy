@@ -28,7 +28,8 @@ import pathlib
 from concurrent.futures import ProcessPoolExecutor
 from .teem import sample_alpha_hmc, sample_theta_hmc
 from scipy.stats import expon
-
+from .hollywood import E2Estimator
+ 
 def dd_list():
     return defaultdict(list)
 
@@ -158,6 +159,17 @@ class HTEEM():
 
         self.initialize_state(interactions, change_times)
 
+        #Get sender probabilities
+        print('Evaluating Sender Probabilities as Normal E2')
+        sender_data = [interaction[1] for interaction in interactions]
+        unique_senders, sender_degrees = np.unique(sender_data, return_counts=True)
+
+        sender_e2 = E2Estimator()
+        sender_e2.fit(sender_data, flat_list=True)
+        self.sender_alpha = sender_e2.alphas[-1][0]
+        self.sender_theta = sender_e2.thetas[-1][0]
+        self.sender_probabilities = sender_degrees + self.sender_alpha / (sender_degrees.sum() + self.sender_theta)
+        
         s_time = time.time()
         for t in range(num_times):
             
@@ -209,7 +221,8 @@ class HTEEM():
                         'sticks': self.sticks,
                         'change_times': change_times,
                         'table_counts': self.table_counts,
-                        'receiver_change_inds': self.rec_change_inds
+                        'receiver_change_inds': self.rec_change_inds,
+                        'change_locations': self.change_locations
                         }
             if t >= num_times / 2:
                 file_dir = save_dir / '{}.pkl'.format(t - int(num_times / 2))
@@ -838,13 +851,12 @@ class HTEEM():
                 #    import pdb
                 #    pdb.set_trace()
             for s in created_senders:
-
                 #for ss in created_senders:
                 #    log_rec_probs[s] += np.sum(before_rec_likelihood_components[ss])
                 #    log_rec_probs[s] += np.sum(after_rec_likelihood_components[ss])
                 log_rec_probs[s][:-1] -= after_rec_likelihood_components[s]
                 log_rec_probs[s] += total_likelihood_components
-                
+                log_rec_probs[s] += np.log(self.sender_probabilities[s])
             #import pdb
             #pdb.set_trace()
             #First, choose sender:
