@@ -324,7 +324,7 @@ def get_receiver_inds_change_times(temporal_probs, change_times):
     return ct_inds
 
 
-def update_sticks_full_data_update(tp_initial, interactions, alpha, theta):
+def update_sticks_full_data_update(tp_initial, interactions, alpha, theta, iteration=None):
 
     num_recs = len(set([r for t, recs in interactions for r in recs]))
     recs_initial, change_times = zip(*[(r, t) for (r, v) in tp_initial.arrival_times_dict.items() 
@@ -404,8 +404,13 @@ def update_sticks_full_data_update(tp_initial, interactions, alpha, theta):
 
         probs = np.concatenate([sticks_after, [1]])
         probs[1:] = probs[1:] * np.cumprod(1 - probs[:-1])
+        if probs.any() <= 0:
+            print('Iteration {} is where it fucked up'.format(iteration))
 
-        log_probs = np.log(probs)
+        try:
+            log_probs = np.log(probs)
+        except:
+            print('Iteration {} is where it fucked up'.format(iteration))
         #Calculate likelihood of each jump
         #First step, add integrated new beta
         log_probs[:-1] += betaln(1 - alpha + degrees_after, 
@@ -803,7 +808,7 @@ def run_chain(save_dir, num_times, interactions, nu, theta_priors=(10, 10),
             print(t)
         #tp_initial, rec_choice, stick_choice = update_sticks_v2(tp_initial, interactions, alpha, theta)
         #tp_initial, rec_choice, stick_choice = update_sticks_new_jump_update(tp_initial, interactions, alpha, theta)
-        tp_initial = update_sticks_full_data_update(tp_initial, interactions, alpha, theta)
+        tp_initial = update_sticks_full_data_update(tp_initial, interactions, alpha, theta, iteration=t)
 
         if update_interarrival_times:
             tp_initial, accepted, log_acceptance_probs = sample_interarrival_times(tp_initial,

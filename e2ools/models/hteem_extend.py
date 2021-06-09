@@ -27,9 +27,10 @@ from scipy.special import betaln, logsumexp
 import pathlib
 from concurrent.futures import ProcessPoolExecutor
 from .teem import sample_alpha_hmc, sample_theta_hmc
+from .teem import run_chain as run_chain_teem
 from scipy.stats import expon
 from .hollywood import E2Estimator
- 
+
 def dd_list():
     return defaultdict(list)
 
@@ -108,10 +109,6 @@ class HTEEM():
         self.r_set = set([r for interaction in interactions for r in interaction[2]])
         self.r_size = len(self.r_set)
 
-        #self.r_set_by_sender = {}
-        #for s in self.s_set:
-        #   self.r_set_by_sender[s] = set([r for interaction in interactions if interaction[1] == s for r in interaction[-1]])
-
         self.created_sender_times = {}
         for (t, s, receivers) in interactions:
             if s not in self.created_sender_times:
@@ -136,8 +133,92 @@ class HTEEM():
             except TypeError:
                 self.theta_s = {s: self.theta_s for s in self.s_set}
 
+        self._smart_initialize(interactions)
         self._sample_table_configuration(interactions, initial=True)
 
+
+    def _smart_initialize(self, interactions, cutoff=1000):
+
+        #Sort interactions by sender
+        interactions_by_sender = defaultdict(list)
+        for t, s, recs in interactions:
+            interactions_by_sender[s].append([t, recs])
+
+        #For every sender, run TEEM to get a reasonable starting place.
+
+        init_dir = self.master_save_dir / 'init'
+        if not init_dir.is_dir():
+            init_dir.mkdir()
+
+        change_point_list = []
+        for s in self.s_set:
+            if len(interactions_by_sender[s]) < cutoff:
+                continue
+
+            #Normalize the interactions_by_sender.
+            renamed_interactions = []
+            original_to_inference_labels = {}
+
+            t_min = interactions_by_sender[s][0][0]
+            t_max = interactions_by_sender[s][-1][0]
+            counter = 0
+
+            for (t, recs) in interactions_by_sender[s]:
+                new_recs = []
+                for r in recs:
+                    if r not in original_to_inference_labels:
+                        original_to_inference_labels[r] = counter
+                        counter += 1
+                    new_recs.append(original_to_inference_labels[r])
+                new_t = (t - t_min) / (t_max - t_min) * 100
+                renamed_interactions.append([new_t, new_recs])
+
+            inference_to_original_labels = {v: k for (k, v) in 
+                                        original_to_inference_labels.items()}
+
+            #We need to choose nu. 
+            #nu should be dependent on amount of data.
+            nu = max(0, 10 * np.log(0.1 * len(renamed_interactions))) / 100
+
+            #Run E2 to get a better prior for theta, alpha.
+            e2_est = E2Estimator()
+            e2_est.fit([recs for (t, recs) in renamed_interactions])
+
+            #NEED to add protections for a <= 0.
+            alpha_mean = max(e2_est.alphas[-1][0], 0.01)
+
+            alpha_priors = (alpha_mean * 5, (1 - alpha_mean) * 5)
+            print(alpha_priors)
+
+            theta_mean = e2_est.thetas[-1][0]
+            theta_priors = (theta_mean**(0.5), theta_mean**(0.5))
+            print(theta_priors)
+
+            run_chain_teem(init_dir, 100, renamed_interactions, nu, 
+                alpha_priors=alpha_priors, theta_priors=theta_priors, 
+                update_alpha=True, update_theta=True,
+                update_interarrival_times=True, sigma_it = 1 / nu)
+
+
+            with (init_dir / '49.pkl').open('rb') as infile:
+                tp, params = pickle.load(infile)
+                for node, at_list in tp.arrival_times_dict.items():
+                    if node == -1:
+                        continue
+                    for at in at_list:
+                        change_point_list.append(
+                                            (s,
+                                            inference_to_original_labels[node],
+                                            at)
+                                            )
+
+        change_point_list.sort()
+        self.change_times = []
+        self.change_locations = []
+
+        for ind, (t, s, r) in enumerate(change_point_list):
+            self.change_times.append(t)
+            self.change_locations.append((s, r))
 
     def run_chain(self, save_dir, num_times, interactions, change_times=None,
                     sample_parameters=True, update_global_alpha=True, update_global_theta=True,
@@ -236,6 +317,8 @@ class HTEEM():
                     global_alpha_priors=(1,1), local_theta_priors=(2,5), num_iter_itime=10, print_iter=50):   
 
 
+        self.master_save_dir = master_save_dir
+        
         rc_func = partial(self.run_chain, num_times=num_iters_per_chain, 
                         interactions=interactions, global_alpha_priors=global_alpha_priors,
                         update_local_thetas=update_local_thetas, update_global_alpha=update_global_alpha, 
