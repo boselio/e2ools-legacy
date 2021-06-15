@@ -45,8 +45,8 @@ class HTEEM():
     def __init__(self, nu, sigma_at=None, alpha=None, theta=None, theta_s=None, 
                     num_chains=4, num_iters_per_chain=500, 
                     holdout=100, alpha_hyperparams=(5, 5),
-                    theta_hyperparams=(10, 10), lower_alpha_hyperparams=(5,5),
-                    lower_theta_hyperparams=(10,10)):
+                    theta_hyperparams=(10, 10),
+                    lower_theta_hyperparams=None):
 
         self.alpha_hyperparams = alpha_hyperparams
         self.theta_hyperparams = theta_hyperparams
@@ -61,7 +61,7 @@ class HTEEM():
         else:
             self.sigma_at = sigma_at
         
-    def initialize_state(self, interactions, change_times):
+    def initialize_state(self, interactions, smart_initialize, change_times=None):
 
         #Initialize state variables
         ####Don't think I need this
@@ -70,11 +70,12 @@ class HTEEM():
         self.global_table_counts = np.array([])
         ####
         
-        #Sampled (or given) change times
-        self.change_times = change_times
+        if not smart_initialize:
+            #Sampled (or given) change times
+            self.change_times = change_times
         
-        #The locations that are sampled for each change time.
-        self.change_locations = [(-1, -1) for _ in self.change_times]
+            #The locations that are sampled for each change time.
+            self.change_locations = [(-1, -1) for _ in self.change_times]
         
         #indices of changes, per sender and per table
         self.table_change_inds = defaultdict(dd_list)
@@ -121,9 +122,9 @@ class HTEEM():
             self.theta = np.random.gamma(*self.theta_hyperparams)
 
         if self.theta_s is None:
-            if len(self.lower_theta_hyperparams) != self.s_size:
+            if self.lower_theta_hyperparams is None:
                 self.lower_theta_hyperparams = dict(zip(self.s_set, 
-                                [self.lower_theta_hyperparams] * self.s_size))
+                                [(10, 10)] * self.s_size))
 
             self.theta_s = {s: np.random.gamma(*self.lower_theta_hyperparams[s]) 
                                                             for s in self.s_set}
@@ -133,7 +134,9 @@ class HTEEM():
             except TypeError:
                 self.theta_s = {s: self.theta_s for s in self.s_set}
 
-        self._smart_initialize(interactions)
+        if smart_initialize:
+            self._smart_initialize(interactions)
+
         self._sample_table_configuration(interactions, initial=True)
 
 
@@ -152,6 +155,7 @@ class HTEEM():
 
         change_point_list = []
         for s in self.s_set:
+            print(s)
             if len(interactions_by_sender[s]) < cutoff:
                 continue
 
@@ -185,7 +189,7 @@ class HTEEM():
             e2_est.fit([recs for (t, recs) in renamed_interactions])
 
             #NEED to add protections for a <= 0.
-            alpha_mean = max(e2_est.alphas[-1][0], 0.01)
+            alpha_mean = max(e2_est.alphas[-1][0], 0.1)
 
             alpha_priors = (alpha_mean * 5, (1 - alpha_mean) * 5)
             print(alpha_priors)
@@ -205,22 +209,26 @@ class HTEEM():
                 for node, at_list in tp.arrival_times_dict.items():
                     if node == -1:
                         continue
-                    for at in at_list:
+                    for at in at_list[1:]:
                         change_point_list.append(
-                                            (s,
-                                            inference_to_original_labels[node],
-                                            at)
+                                            (at,
+                                            s,
+                                            inference_to_original_labels[node])
                                             )
-
+            print("Non-dust change_times: {}".format(len(change_point_list)))
         change_point_list.sort()
         self.change_times = []
         self.change_locations = []
 
+        #import pdb
+        #pdb.set_trace()
         for ind, (t, s, r) in enumerate(change_point_list):
             self.change_times.append(t)
             self.change_locations.append((s, r))
+            self.rec_change_inds[s][r].append(ind)
 
-    def run_chain(self, save_dir, num_times, interactions, change_times=None,
+
+    def run_chain(self, save_dir, num_times, interactions, change_times=None, smart_initialize=True,
                     sample_parameters=True, update_global_alpha=True, update_global_theta=True,
                     update_local_thetas=True, global_alpha_priors=(1,1), global_theta_priors=(10,10),
                     local_theta_priors=(2,5), update_interarrival_times=False, num_iter_itime=10, seed=None, 
@@ -229,7 +237,7 @@ class HTEEM():
         np.random.seed(seed)
         max_time = interactions[-1][0]
 
-        if change_times is None:
+        if change_times is None and not smart_initialize:
             change_times = [np.random.exponential(1 / self.nu)]
             while True:
                 itime = np.random.exponential(1 / self.nu)
@@ -238,7 +246,7 @@ class HTEEM():
                 else:
                     change_times.append(change_times[-1] + itime)
 
-        self.initialize_state(interactions, change_times)
+        self.initialize_state(interactions, smart_initialize, change_times)
 
         #Get sender probabilities
         print('Evaluating Sender Probabilities as Normal E2')
@@ -252,6 +260,7 @@ class HTEEM():
         self.sender_probabilities = sender_degrees + self.sender_alpha / (sender_degrees.sum() + self.sender_theta)
         
         s_time = time.time()
+
         for t in range(num_times):
             
             if t % print_iter == 0:
@@ -300,7 +309,7 @@ class HTEEM():
                         'receiver_inds': self.receiver_inds,
                         'global_sticks': self.global_sticks,
                         'sticks': self.sticks,
-                        'change_times': change_times,
+                        'change_times': self.change_times,
                         'table_counts': self.table_counts,
                         'receiver_change_inds': self.rec_change_inds,
                         'change_locations': self.change_locations
@@ -375,8 +384,11 @@ class HTEEM():
                 for r in receivers:
                     self._add_customer(t, s, r)
 
-            degree_mats = {}
-            s_mats = {}
+            self._sample_sticks(interactions)
+            #Now, update all sticks accordingly, WITHOUt updating jump points.
+
+            #degree_mats = {}
+            #s_mats = {}
 
             #beta_mat = np.zeros((num_tables, len(change_times) + 1))
             #table_inds = {}
@@ -385,12 +397,12 @@ class HTEEM():
             #pdb.set_trace()
 
             #self.sample_ordering()
-            num_senders = len(self.created_sender_times)
+            #num_senders = len(self.created_sender_times)
 
-            for s in range(len(self.table_counts)):
-                degree_mats[s] =  np.array(self.table_counts[s])
-                s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
-                                                        np.zeros((1, len(self.change_times) + 1))])
+            #for s in range(len(self.table_counts)):
+            #    degree_mats[s] =  np.array(self.table_counts[s])
+            #    s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
+                                                        #np.zeros((1, len(self.change_times) + 1))])
 
                 #for table in range(len(self.table_counts[s])):
                 #    try:
@@ -399,14 +411,14 @@ class HTEEM():
                 #        import pdb
                 #        pdb.set_trace()
 
-            for s in range(len(self.table_counts)):
-                for table in range(len(self.table_counts[s])):
+            #for s in range(len(self.table_counts)):
+            #    for table in range(len(self.table_counts[s])):
                     #draw beta
-                    begin_ind = 0
+            #        begin_ind = 0
 
-                    new_stick = self.draw_local_beta(degree_mats[s][table,:].sum(),
-                                        s_mats[s][table,:].sum(), self.theta_s[s])
-                    self.sticks[s][table][begin_ind:] = new_stick
+            #        new_stick = self.draw_local_beta(degree_mats[s][table,:].sum(),
+            #                            s_mats[s][table,:].sum(), self.theta_s[s])
+            #        self.sticks[s][table][begin_ind:] = new_stick
 
         else:
             interaction_inds = np.random.permutation(len(interactions))
@@ -1042,6 +1054,52 @@ class HTEEM():
                         new_stick = self.draw_local_beta(degree_mats[new_s][table, begin_ind:ind+1].sum(), 
                                                 s_mats[new_s][table, begin_ind:ind+1].sum(), self.theta_s[new_s])
                         self.sticks[new_s][table][begin_ind:ind+1] = new_stick
+
+        for s in range(num_senders):
+            for table in range(len(self.table_counts[s])):
+                #draw beta
+                end_ind = self.get_next_switch(s, table, -1)
+                new_stick = self.draw_local_beta(degree_mats[s][table,:end_ind].sum(),
+                                        s_mats[s][table,:end_ind].sum(), self.theta_s[s])
+                self.sticks[s][table][:end_ind] = new_stick
+
+        try:
+            self.check_change_locations()
+        except AssertionError:
+            import pdb
+            pdb.set_trace()
+        return 
+
+
+
+    def _sample_sticks(self, interactions, debug_fixed_locations=False):
+
+        permuted_inds = np.random.permutation(len(self.change_times))
+        
+        # calculate all degrees between change times for all receivers
+        degree_mats = {}
+        s_mats = {}
+
+        num_senders = len(self.created_sender_times)
+
+        for s in range(len(self.table_counts)):
+            degree_mats[s] =  np.array(self.table_counts[s])
+            s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
+                                                    np.zeros((1, len(self.change_times) + 1))])
+
+        for ind in permuted_inds:
+            s, r = self.change_locations[ind]
+            for table in self.receiver_inds[s][r][:-1]:
+                begin_ind = self.get_last_switch(s, table, ind)
+                end_ind = self.get_next_switch(s, table, ind)
+                
+                new_stick = self.draw_local_beta(degree_mats[s][table, ind+1:end_ind].sum(), 
+                                            s_mats[s][table, ind+1:end_ind].sum(), self.theta_s[s])
+                self.sticks[s][table][ind+1:end_ind] = new_stick
+
+                new_stick = self.draw_local_beta(degree_mats[s][table, begin_ind:ind+1].sum(), 
+                                            s_mats[s][table, begin_ind:ind+1].sum(), self.theta_s[s])
+                self.sticks[s][table][begin_ind:ind+1] = new_stick
 
         for s in range(num_senders):
             for table in range(len(self.table_counts[s])):

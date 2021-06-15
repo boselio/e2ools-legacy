@@ -255,7 +255,7 @@ def draw_beta(interactions, tp, begin_time, alpha, theta, r):
     a = 1 - alpha + degree_dict[r]
     b = theta + (r + 1) * alpha + np.sum([v for (k, v) in degree_dict.items() if k > r])
 
-    return np.random.beta(a, b)
+    return min(np.random.beta(a, b), 1 - 1e-8)
 
 
 def draw_beta_speedy(interactions, begin_time, end_time, alpha, theta, r):
@@ -450,13 +450,13 @@ def update_sticks_full_data_update(tp_initial, interactions, alpha, theta, itera
                 #Draw the beta backward
                 a = 1 - alpha + degrees_before[new_choice]
                 b = theta + (new_choice + 1) * alpha + s_before[new_choice]
-                before_stick = np.random.beta(a, b)
+                before_stick = min(np.random.beta(a, b), 1 - 1e-8)
                 tp_initial.stick_dict[new_choice][change_index - 1] = before_stick
 
                 #Draw the beta forward
                 a = 1 - alpha + degrees_after[new_choice]
                 b = theta + (new_choice + 1) * alpha + s_after[new_choice]
-                after_stick = np.random.beta(a, b)
+                after_stick = min(np.random.beta(a, b), 1 - 1e-8)
                 tp_initial.stick_dict[new_choice][change_index] = after_stick
 
         else:
@@ -467,7 +467,7 @@ def update_sticks_full_data_update(tp_initial, interactions, alpha, theta, itera
                 # redraw the beta that we had deleted.
                 a = 1 - alpha + degrees_before[r_delete] + degrees_after[r_delete]
                 b = theta + (r_delete + 1) * alpha + s_before[r_delete] + s_after[r_delete]
-                new_stick = np.random.beta(a, b)
+                new_stick = min(np.random.beta(a, b), 1 - 1e-8)
 
                 begin_time, change_ind = tp_initial.get_last_switch(r_delete, ct, return_index=True)
                 tp_initial.stick_dict[r_delete][change_ind] = new_stick
@@ -480,7 +480,7 @@ def update_sticks_full_data_update(tp_initial, interactions, alpha, theta, itera
                 # Draw the beta backward
                 a = 1 - alpha + degrees_before[new_choice]
                 b = theta + (new_choice + 1) * alpha + s_before[new_choice]
-                before_stick = np.random.beta(a, b)
+                before_stick = min(np.random.beta(a, b), 1 - 1e-8)
 
                 begin_time, change_ind = tp_initial.get_last_switch(new_choice, ct, return_index=True)
                 tp_initial.stick_dict[new_choice][change_ind] = before_stick
@@ -488,25 +488,25 @@ def update_sticks_full_data_update(tp_initial, interactions, alpha, theta, itera
                 #Draw the beta forward
                 a = 1 - alpha + degrees_after[new_choice]
                 b = theta + (new_choice + 1) * alpha + s_after[new_choice]
-                after_stick = np.random.beta(a, b)
+                after_stick = min(np.random.beta(a, b), 1 - 1e-8)
 
                 tp_initial.insert_change(new_choice, ct, after_stick)
 
 
     # Reupdate all the initial sticks, in case they did not get updated.
     # TODO: rewrite this part using the vars above and without draw_beta. 
+    after_times = np.array([tp_initial.get_next_switch(r, ct) for r, ct in enumerate(tp_initial.created_times)])
+    after_inds = np.searchsorted(np.concatenate([[0], change_times]), after_times, side='left') - 1
+    after_inds[after_inds == -1] = len(change_times) + 1
+    degrees = np.array([degree_mat[r, :after_inds[r]].sum() for r in range(num_recs)])
+    s = np.array([s_mat[r, :after_inds[r]].sum() for r in range(num_recs)])
+
+    a = 1 - alpha + degrees
+    b = theta + np.arange(1, num_recs+1) * alpha + s
+    new_sticks = np.minimum(np.random.beta(a, b), 1 - 1e-8)
+
     for r in range(num_recs):
-            #draw beta
-        end_time = tp_initial.get_next_switch(r, tp_initial.created_times[r])
-        if end_time == -1:
-            end_time = max_time
-
-        begin_ind = bisect_left(interaction_times, tp_initial.created_times[r])
-        end_ind = bisect_right(interaction_times, end_time)
-
-        new_stick = draw_beta(interactions[begin_ind:end_ind], tp_initial, tp_initial.created_times[r], alpha, theta, r)
-
-        tp_initial.stick_dict[r][0] = new_stick
+        tp_initial.stick_dict[r][0] = new_sticks[r]
 
     return tp_initial
 
@@ -692,6 +692,55 @@ def evaluate_itime_likelihood(interactions, r, tp, proposal_time, begin_time, en
     return ll
 
 
+def evaluate_itime_likelihood_new(interactions, r, before_stick, after_stick,
+                                     proposal_time, begin_time, end_time,
+                                     created_time, nu):
+    ll = 0
+    interaction_times = [t for (t, interaction) in interactions]
+
+    #Evaluate the time from begin_time to proposal_time
+    begin_ind = bisect_left(interaction_times, begin_time)
+    proposal_ind = bisect_right(interaction_times, proposal_time)
+
+    recs, degrees = np.unique([r for interaction in interactions[begin_ind:proposal_ind] for r in interaction[1]],
+                              return_counts=True)
+    degree_dict = dict(zip(recs, degrees))
+
+    r = int(r)
+    if r not in degree_dict:
+        degree_dict[r] = 0
+    if begin_time == created_time:
+                degree_dict[r] -= 1
+
+    if before_stick <= 0:
+        import pdb
+        pdb.set_trace()
+    ll += degree_dict[r] * np.log(before_stick)
+    ll += np.sum([v for (k, v) in degree_dict.items() if k > r]) * (1 - before_stick)
+
+    #Evaluate the proposal_time to end_time
+    end_ind = bisect_right(interaction_times, end_time)
+
+    recs, degrees = np.unique([r for interaction in interactions[proposal_ind:end_ind] for r in interaction[1]],
+                              return_counts=True)
+    degree_dict = dict(zip(recs, degrees))
+
+    if r not in degree_dict:
+        degree_dict[r] = 0
+
+    if after_stick <= 0:
+        import pdb
+        pdb.set_trace()
+    ll += degree_dict[r] * np.log(after_stick)
+    ll += np.sum([v for (k, v) in degree_dict.items() if k > r]) * (1 - after_stick)
+
+    ll += expon.logpdf(proposal_time - begin_time, scale=1/nu)
+    ll+= expon.logpdf(end_time - proposal_time, scale=1/nu)
+
+    return ll
+
+
+
 def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, sigma):
 
     num_recs = len(set([r for t, recs in interactions for r in recs]))
@@ -754,16 +803,28 @@ def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, si
                 log_acceptance_probs.append(-1)
                 continue
 
-        tp_candidate = deepcopy(temporal_probs)
+        #Is there a way to do this without copying the entire temporal_probs object?
+        #tp_candidate = deepcopy(temporal_probs)
         
-        tp_candidate.move_change(r, at, at_new)
-        ll_new = evaluate_itime_likelihood(interactions, r, tp_candidate, at_new, 
-                                            begin_time, end_time, nu)
+        #tp_candidate.move_change(r, at, at_new)
+        #ll_new = evaluate_itime_likelihood(interactions, r, tp_candidate, at_new, 
+        #                                    begin_time, end_time, nu)
+
+        before_stick = temporal_probs.get_stick(r, begin_time)
+        after_stick = temporal_probs.get_stick(r, at)
+        created_time = temporal_probs.created_times[r]
+        ll_new = evaluate_itime_likelihood_new(interactions, r, before_stick,
+                                                    after_stick, at_new, 
+                                                    begin_time, end_time, 
+                                                    created_time, nu)
+
+        #print(ll_new_new, ll_new)
+        #assert np.isclose(ll_new,ll_new_new)
 
         log_acceptance_probs.append(ll_new - ll_old)
         if np.log(np.random.rand()) < ll_new - ll_old:
             accepted.append(True)
-            temporal_probs = tp_candidate
+            temporal_probs.move_change(r, at, at_new)
             arrival_times[i] = at_new
         else:
             accepted.append(False)

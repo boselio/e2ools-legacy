@@ -36,7 +36,14 @@ def draw_stick(alpha, theta, i):
 
 def create_temporal_e2_data(alpha=0.1, theta=10, num_interactions=1000, delta=10, nu=1, 
                             num_recs_per_interaction=None, debug_print=None):
+    """Generate from the TEEM model.
 
+    Keyword arguments:
+    alpha -- (0, 1), Pitman-Yor parameter
+    theta -- (0, infinity), Pitman-Yor parameter
+    num_interactions -- Number of interactions generated
+    delta --  parameter to control the interarrival times between 
+    """
     if num_recs_per_interaction is None:
         def random_gen():
             while True:
