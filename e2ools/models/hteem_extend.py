@@ -182,7 +182,8 @@ class HTEEM():
 
             #We need to choose nu. 
             #nu should be dependent on amount of data.
-            nu = max(0, 10 * np.log(0.1 * len(renamed_interactions))) / 100
+            nu = max(0, 50 * np.log(0.1 * len([r for interaction in 
+                                            renamed_interactions for r in interaction[-1]]))) / 100
 
             #Run E2 to get a better prior for theta, alpha.
             e2_est = E2Estimator()
@@ -251,7 +252,7 @@ class HTEEM():
 
         #Get sender probabilities
         print('Evaluating Sender Probabilities as Normal E2')
-        sender_data = [interaction[1] for interaction in interactions]
+        sender_data = [s for (t, s, recs) in interactions for r in recs]
         unique_senders, sender_degrees = np.unique(sender_data, return_counts=True)
 
         sender_e2 = E2Estimator()
@@ -825,6 +826,7 @@ class HTEEM():
         
         # calculate all degrees between change times for all receivers
         degree_mats = {}
+        degree_sums = {}
         s_mats = {}
 
         #beta_mat = np.zeros((num_tables, len(change_times) + 1))
@@ -835,9 +837,9 @@ class HTEEM():
 
         for s in range(len(self.table_counts)):
             degree_mats[s] =  np.array(self.table_counts[s])
+            degree_sums[s] = np.cumsum(np.hstack([np.zeros((degree_mats[s].shape[0], 1)), degree_mats[s]]), axis=1)
             s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
                                                     np.zeros((1, len(self.change_times) + 1))])
-
 
         #for s in range(num_senders):
             #assert (degree_mats[s] >= 0).all()
@@ -895,6 +897,7 @@ class HTEEM():
                 
                 num_tables = len(self.table_counts[s])
                 table_sticks = np.array([self.sticks[s][table][ind] for table in range(num_tables)])
+                
                 table_probs = np.concatenate([table_sticks,  [1]])
                 table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
 
@@ -919,11 +922,22 @@ class HTEEM():
                 #Now, need to add all other likelihood components, i.e. all degrees for
                 #which the receiver did not jump. s, i, ind
 
-                degrees_before = np.array([degree_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
+                #degrees_before = np.array([degree_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
+                #try:
+                degrees_before = np.array([degree_sums[s][r, ind+1] - degree_sums[s][r, before_inds[r]] for r in range(num_tables)])
+                #except IndexError:
+                #    import pdb
+                #    pdb.set_trace()
+                #try:
+                #    assert (degrees_before == degrees_before_temp).all()
+                #except AssertionError:
+                #    import pdb
+                #    pdb.set_trace()
                 s_before = np.array([s_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
 
-                before_table_likelihood_components = degrees_before * np.log(np.array(self.sticks[s])[:, ind])
-                before_table_likelihood_components += s_before * np.log(1 - np.array(self.sticks[s])[:, ind])
+
+                before_table_likelihood_components = degrees_before * np.log(table_sticks)
+                before_table_likelihood_components += s_before * np.log(1 - table_sticks)
                 #before_rec_likelihood_components[s] = np.array([before_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
                 #                for r in range(num_recs)])
 
@@ -964,8 +978,8 @@ class HTEEM():
                 #log_rec_probs[s][:-1] += integrated_rec_counts[s][non_zero_recs[s][:-1]]
 
                 #Use ind and not ind+1 because this is the component of the likelihood when the stick does not change.
-                after_table_likelihood_components = degrees_after * np.log(np.array(self.sticks[s])[:, ind])
-                after_table_likelihood_components += s_after * np.log(1 - np.array(self.sticks[s])[:, ind])
+                after_table_likelihood_components = degrees_after * np.log(table_sticks)
+                after_table_likelihood_components += s_after * np.log(1 - table_sticks)
 
                 #after_rec_likelihood_components[s] = np.array([after_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
                 #                for r in range(num_recs)])
