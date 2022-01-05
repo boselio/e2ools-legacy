@@ -182,7 +182,8 @@ class HTEEM():
 
             #We need to choose nu. 
             #nu should be dependent on amount of data.
-            nu = max(0, 10 * np.log(0.1 * len(renamed_interactions))) / 100
+            nu = max(0, 50 * np.log(0.1 * len([r for interaction in 
+                                            renamed_interactions for r in interaction[-1]]))) / 100
 
             #Run E2 to get a better prior for theta, alpha.
             e2_est = E2Estimator()
@@ -210,8 +211,9 @@ class HTEEM():
                     if node == -1:
                         continue
                     for at in at_list[1:]:
+                        new_at = at * (t_max - t_min) / 100 + t_min
                         change_point_list.append(
-                                            (at,
+                                            (new_at,
                                             s,
                                             inference_to_original_labels[node])
                                             )
@@ -250,14 +252,19 @@ class HTEEM():
 
         #Get sender probabilities
         print('Evaluating Sender Probabilities as Normal E2')
-        sender_data = [interaction[1] for interaction in interactions]
+        sender_data = [s for (t, s, recs) in interactions for r in recs]
         unique_senders, sender_degrees = np.unique(sender_data, return_counts=True)
 
         sender_e2 = E2Estimator()
         sender_e2.fit(sender_data, flat_list=True)
         self.sender_alpha = sender_e2.alphas[-1][0]
         self.sender_theta = sender_e2.thetas[-1][0]
-        self.sender_probabilities = sender_degrees + self.sender_alpha / (sender_degrees.sum() + self.sender_theta)
+
+        if self.sender_alpha < 0 or self.sender_theta > 1e6:
+            self.sender_probabilities = sender_degrees / sender_degrees.sum()
+        else:
+            self.sender_probabilities = (sender_degrees - self.sender_alpha) / (sender_degrees.sum() + self.sender_theta)
+            self.sender_probabilities = self.sender_probabilities / self.sender_probabilities.sum()
         
         s_time = time.time()
 
@@ -502,7 +509,12 @@ class HTEEM():
             scores = scores / scores.sum()
             #import pdb
             #pdb.set_trace()
-            new_ordering = np.random.choice(len(scores), size=len(scores), replace=False, p=scores)
+            try:
+                new_ordering = np.random.choice(len(scores), size=len(scores), replace=False, p=scores)
+            except ValueError:
+                import pdb
+                pdb.set_trace()
+
             scores_ordered = scores[new_ordering]
             scores_ordered[1:] = scores_ordered[1:] / (1 - np.cumsum(scores_ordered[:-1]))
             temp = scores_ordered.copy()
@@ -814,6 +826,7 @@ class HTEEM():
         
         # calculate all degrees between change times for all receivers
         degree_mats = {}
+        degree_sums = {}
         s_mats = {}
 
         #beta_mat = np.zeros((num_tables, len(change_times) + 1))
@@ -824,9 +837,9 @@ class HTEEM():
 
         for s in range(len(self.table_counts)):
             degree_mats[s] =  np.array(self.table_counts[s])
+            degree_sums[s] = np.cumsum(np.hstack([np.zeros((degree_mats[s].shape[0], 1)), degree_mats[s]]), axis=1)
             s_mats[s] = np.vstack([np.flipud(np.cumsum(np.flipud(degree_mats[s]), axis=0))[1:, :], 
                                                     np.zeros((1, len(self.change_times) + 1))])
-
 
         #for s in range(num_senders):
             #assert (degree_mats[s] >= 0).all()
@@ -839,8 +852,13 @@ class HTEEM():
             #        pdb.set_trace()
 
         for ind in permuted_inds:
+            change_s, change_r = self.change_locations[ind]
         #Need to calculate, the likelihood of each stick if that receiver
         #was not chosen.
+            #if ind == 13:
+            #    import pdb
+            #    pdb.set_trace()
+
             ct = self.change_times[ind]
             if ind > 0:
                 begin_time = self.change_times[ind-1]
@@ -858,6 +876,9 @@ class HTEEM():
 
             before_rec_likelihood_components = {}
             after_rec_likelihood_components = {}
+            after_rec_likelihood_potential = {}
+            integrated_rec_counts = {}
+            beta_temp = {}
             #Calculate likelihood of each jumps
             created_senders = [s for (s, t) in self.created_sender_times.items() if t < ct]
 
@@ -876,6 +897,7 @@ class HTEEM():
                 
                 num_tables = len(self.table_counts[s])
                 table_sticks = np.array([self.sticks[s][table][ind] for table in range(num_tables)])
+                
                 table_probs = np.concatenate([table_sticks,  [1]])
                 table_probs[1:] = table_probs[1:] * np.cumprod(1 - table_probs[:-1])
 
@@ -892,7 +914,6 @@ class HTEEM():
                 #assert np.isclose(1, rec_probs[s].sum())
 
                 non_zero_recs[s] = np.where(rec_probs[s] > 0)[0]
-
                 log_rec_probs[s] = np.log(rec_probs[s][non_zero_recs[s]])
 
                 before_inds = np.array([self.get_last_switch(s, t, ind) for t in range(num_tables)])
@@ -901,11 +922,22 @@ class HTEEM():
                 #Now, need to add all other likelihood components, i.e. all degrees for
                 #which the receiver did not jump. s, i, ind
 
-                degrees_before = np.array([degree_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
+                #degrees_before = np.array([degree_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
+                #try:
+                degrees_before = np.array([degree_sums[s][r, ind+1] - degree_sums[s][r, before_inds[r]] for r in range(num_tables)])
+                #except IndexError:
+                #    import pdb
+                #    pdb.set_trace()
+                #try:
+                #    assert (degrees_before == degrees_before_temp).all()
+                #except AssertionError:
+                #    import pdb
+                #    pdb.set_trace()
                 s_before = np.array([s_mats[s][r, before_inds[r]:ind+1].sum() for r in range(num_tables)])
 
-                before_table_likelihood_components = degrees_before * np.log(np.array(self.sticks[s])[:, ind])
-                before_table_likelihood_components += s_before * np.log(1 - np.array(self.sticks[s])[:, ind])
+
+                before_table_likelihood_components = degrees_before * np.log(table_sticks)
+                before_table_likelihood_components += s_before * np.log(1 - table_sticks)
                 #before_rec_likelihood_components[s] = np.array([before_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
                 #                for r in range(num_recs)])
 
@@ -918,19 +950,36 @@ class HTEEM():
                 degrees_after = np.array([degree_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
                 s_after = np.array([s_mats[s][r, ind+1:after_inds[r]].sum() for r in range(num_tables)])
                 
+                #For all after ones, draw new betas
+                beta_temp[s] = self.draw_local_beta(degrees_after, s_after, self.theta_s[s])
+                after_table_likelihood_potential = degrees_after * np.log(beta_temp[s])
+                after_table_likelihood_potential += s_after * np.log(1 - beta_temp[s])
+                after_rec_likelihood_potential[s] = np.bincount(table_labels, after_table_likelihood_potential, minlength=num_recs)
+                after_rec_likelihood_potential[s] = after_rec_likelihood_potential[s][non_zero_recs[s][:-1]]
+
+                if change_s == s:
+                    fix_tables = self.receiver_inds[s][change_r][:-1]
+                    beta_fixed = self.draw_local_beta(degrees_after[fix_tables], s_after[fix_tables], self.theta_s[s])
+                    degrees = degrees_before[fix_tables] + degrees_after[fix_tables]
+                    s_temp = s_before[fix_tables] + s_after[fix_tables]
+                    no_change_table_likelihoods = degrees * np.log(beta_fixed)
+                    no_change_table_likelihoods += s_temp * np.log(1 - beta_fixed)
+
+                    no_change_ll = no_change_table_likelihoods.sum()
+
                 #Add integrated new beta using future table counts.
-                integrated_table_counts = betaln(1 + degrees_after, self.theta_s[s] + s_after)
-                integrated_table_counts = integrated_table_counts - betaln(1, self.theta_s[s])
+                #integrated_table_counts = betaln(1 + degrees_after, self.theta_s[s] + s_after)
+                #integrated_table_counts = integrated_table_counts - betaln(1, self.theta_s[s])
                 #integrated_rec_counts = np.array([integrated_table_counts[self.receiver_inds[s][r][:-1]].sum(axis=0) 
                 #                for r in range(num_recs)])
 
-                integrated_rec_counts = np.bincount(table_labels, integrated_table_counts, minlength=num_recs)
+                #integrated_rec_counts[s] = np.bincount(table_labels, integrated_table_counts, minlength=num_recs)
 
-                log_rec_probs[s][:-1] += integrated_rec_counts[non_zero_recs[s][:-1]]
+                #log_rec_probs[s][:-1] += integrated_rec_counts[s][non_zero_recs[s][:-1]]
 
                 #Use ind and not ind+1 because this is the component of the likelihood when the stick does not change.
-                after_table_likelihood_components = degrees_after * np.log(np.array(self.sticks[s])[:, ind])
-                after_table_likelihood_components += s_after * np.log(1 - np.array(self.sticks[s])[:, ind])
+                after_table_likelihood_components = degrees_after * np.log(table_sticks)
+                after_table_likelihood_components += s_after * np.log(1 - table_sticks)
 
                 #after_rec_likelihood_components[s] = np.array([after_table_likelihood_components[self.receiver_inds[s][r][:-1]].sum(axis=0) 
                 #                for r in range(num_recs)])
@@ -939,19 +988,55 @@ class HTEEM():
                 after_rec_likelihood_components[s] = after_rec_likelihood_components[s][non_zero_recs[s][:-1]]
 
                 total_likelihood_components += after_rec_likelihood_components[s].sum() + before_rec_likelihood_components[s].sum()
+                
+
+
                 #after_rec_likelihood_components[s] = after_rec_likelihood_components[s][non_zero_recs[:-1]]
                 #assert (temp == after_rec_likelihood_components[s]).all()
 
-                #if ind == 5:
+                #if ind == 13:
                 #    import pdb
                 #    pdb.set_trace()
-            for s in created_senders:
+            #for s in created_senders:
                 #for ss in created_senders:
                 #    log_rec_probs[s] += np.sum(before_rec_likelihood_components[ss])
                 #    log_rec_probs[s] += np.sum(after_rec_likelihood_components[ss])
-                log_rec_probs[s][:-1] -= after_rec_likelihood_components[s]
+            #    log_rec_probs[s][:-1] -= after_rec_likelihood_components[s]
+            #    log_rec_probs[s] += total_likelihood_components
+            #    log_rec_probs[s] += np.log(self.sender_probabilities[s])
+
+            if change_s != -1:
+                try:
+                    change_ind = np.where(non_zero_recs[change_s] == change_r)[0][0]
+                except KeyError:
+                    import pdb
+                    pdb.set_trace()
+
+            for s in created_senders:
                 log_rec_probs[s] += total_likelihood_components
+
+                #remove old change ll
+                if change_s != -1:
+                    log_rec_probs[s] -= after_rec_likelihood_components[change_s][change_ind]
+                    log_rec_probs[s] -= before_rec_likelihood_components[change_s][change_ind]
+                    #add in new non-change ll
+                    log_rec_probs[s] += no_change_ll
+
+                #remove old after ll
+                log_rec_probs[s][:-1] -= after_rec_likelihood_components[s]
+
+
+                #replace with new potential ll
+                log_rec_probs[s][:-1] += after_rec_likelihood_potential[s]
+
+                #Add sender prior probs
                 log_rec_probs[s] += np.log(self.sender_probabilities[s])
+
+            if change_s != -1:
+                log_rec_probs[change_s][change_ind] -= no_change_ll
+                log_rec_probs[change_s][change_ind] += after_rec_likelihood_components[change_s][change_ind]
+                log_rec_probs[change_s][change_ind] += before_rec_likelihood_components[change_s][change_ind]
+
             #import pdb
             #pdb.set_trace()
             #First, choose sender:
