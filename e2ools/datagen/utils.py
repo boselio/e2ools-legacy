@@ -9,7 +9,7 @@ from numpy.random import poisson, choice
 import matplotlib.pyplot as plt
 from scipy.special import gamma
 import seaborn as sns
-import powerlaw as pl
+#import powerlaw as pl
 import functools
 from ..choice_fns import get_agent, get_agent2
 
