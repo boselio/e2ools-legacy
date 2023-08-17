@@ -3,6 +3,13 @@ from functools import partial
 from collections import defaultdict
 
 
+def draw_stick(alpha, theta, i):
+    if theta + alpha * i == 0:
+        print('Warning: detected that theta + alpha * i = 0, assuming finite structure')
+        return 1
+    return np.random.beta(1 - alpha, theta + alpha * i)
+
+    
 def save_interactions(interactions, file_name):
 
     with open(file_name, 'w') as outfile:
