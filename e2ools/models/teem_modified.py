@@ -1,37 +1,28 @@
-import bisect
-from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor
-from functools import partial
-import math
-import os
-import pathlib
-import pickle
-import time
-
-import matplotlib.backends.backend_pdf
-import matplotlib.pyplot as plt
+from scipy.special import logit, logsumexp, expit, beta, betaln, gamma, digamma
 import numpy as np
-from scipy.special import logit, logsumexp, expit, betaln, digamma
-from scipy.stats import multivariate_normal as expon
-
+from collections import defaultdict, Counter
+import bisect
+from scipy.stats import multivariate_normal as mvn, expon
+import matplotlib.pyplot as plt
+import matplotlib.backends.backend_pdf
+import seaborn as sns
+import scipy.stats as st
+import pickle
+from copy import deepcopy
+from bisect import bisect_right, bisect_left
+import os
+from functools import partial
+import pathlib
+import time
+from concurrent.futures import ProcessPoolExecutor
+import math
 from ..utils import plot_event_times
 from .hmc import hamiltonian_monte_carlo
 
 
 class TemporalProbabilities:
-    """Step-wise changing probabilities for receiver nodes.
-
-    Longer info to be filled in...
-
-    Attributes:
-        stick_dict: A dict with reciever-stick pairs.
-        arrival_times_dict: A dict with receiver - arrival time pairs.
-        created_times: A numpy array holding the created times of each
-            receiver (receivers are guaranteed to be from 0 to n).
-    """
-
-    def __init__(self, sticks, receivers, created_times, created_sticks, change_times):
-        self.stick_dict = defaultdict(list)
+    def __init__(self, sticks, receivers, created_sticks, created_times, change_times):
+        self.stick_array = np.zeros((len(receivers), len(change_times) + 1))
         self.arrival_times_dict = defaultdict(list)
         self.created_times = np.array(created_times)
         for r, (ct, s) in enumerate(zip(created_times, created_sticks)):
@@ -42,22 +33,18 @@ class TemporalProbabilities:
             self.arrival_times_dict[r].append(ct)
             self.stick_dict[r].append(s)
 
-    def get_receiver_stick_trace(  # This method is not currently being used in this module. Somewhere else?
-        self, r, upper_limit
-    ):  # Why is this upper limit necessary?
+    def get_receiver_stick_trace(self, r, upper_limit):
         x = np.array(self.arrival_times_dict[r])
         y = np.array(self.stick_dict[r])
-        y = y[
-            x <= upper_limit
-        ]  # This seems like dangerous behavior. Why should this be a part of the method?
+        y = y[x <= upper_limit]
         x = x[x <= upper_limit]
-        x = np.repeat(x, 2)[1:]  # Do we want this to repeat? Where is this being used?
+        x = np.repeat(x, 2)[1:]
         y = np.repeat(y, 2)
         x = np.concatenate([x, [upper_limit]])
 
         return x, y
 
-    def get_probability_traces(self):  # For plotting only. Maybe make that clear?
+    def get_probability_traces(self):
         times = [t for v in self.arrival_times_dict.values() for t in v]
         times = np.array(times)
         times.sort()
@@ -67,6 +54,7 @@ class TemporalProbabilities:
         true_stick_array = np.zeros((num_times, num_recs))
 
         for r in range(num_recs):
+            stick_list = []
             sticks_ind = np.digitize(times, self.arrival_times_dict[r], right=False) - 1
             sticks = np.array(self.stick_dict[r])[sticks_ind]
             sticks[times < self.created_times[r]] = 0
@@ -94,7 +82,7 @@ class TemporalProbabilities:
         if return_index:
             return s, index
         else:
-            return s  # THIS IS REALLY BAD FORM.
+            return s
 
     def get_probability(self, r, t):
         if r != -1:
@@ -108,7 +96,7 @@ class TemporalProbabilities:
         return prob
 
     def insert_change(self, r, t, s):
-        insert_index = bisect.bisect_right(self.arrival_times_dict[r], t)
+        insert_index = bisect_right(self.arrival_times_dict[r], t)
         self.arrival_times_dict[r].insert(insert_index, t)
         self.stick_dict[r].insert(insert_index, s)
         return
@@ -123,19 +111,14 @@ class TemporalProbabilities:
         self.arrival_times_dict[r][change_index] = t_new
 
     def get_last_switch(self, r, t, return_index=False):
-        index = bisect.bisect_left(self.arrival_times_dict[r], t) - 1
+        index = bisect_left(self.arrival_times_dict[r], t) - 1
         if return_index:
             return self.arrival_times_dict[r][index], index
         else:
-            try:
-                return self.arrival_times_dict[r][index]
-            except IndexError:
-                import pdb
-
-                pdb.set_trace()
+            return self.arrival_times_dict[r][index]
 
     def get_next_switch(self, r, t, return_index=False):
-        index = bisect.bisect_right(self.arrival_times_dict[r], t)
+        index = bisect_right(self.arrival_times_dict[r], t)
         if index == len(self.arrival_times_dict[r]):
             index == -1
             switch_time = -1
@@ -147,6 +130,8 @@ class TemporalProbabilities:
             return switch_time
 
     def get_arrival_times(self):
+        num_recs = len(self.created_times)
+
         nodes, arrival_times = zip(
             *[(k, t) for (k, v) in self.arrival_times_dict.items() for t in v[1:]]
         )
@@ -166,6 +151,7 @@ class TemporalProbabilities:
 
     def generate_trace_pdf(self, save_dir, interactions=None, r_list="all"):
         if interactions is not None:
+            max_time = interactions[-1][0]
             unique_nodes, degrees = np.unique(
                 [i for interaction in interactions for i in interaction[1]],
                 return_counts=True,
@@ -193,8 +179,11 @@ class TemporalProbabilities:
                     if i == 0 and j == 1:
                         # use these for the legend
                         true_label = "Probabilities"
+                        data_label = "Data"
                     else:
                         true_label = None
+                        confidence_label = None
+                        mean_label = None
 
                     axs[i, j].plot(
                         times,
@@ -221,6 +210,50 @@ class TemporalProbabilities:
         return
 
 
+class FastInteractions:
+    # Purpose of class is to wrap interactions so that they can be accessed via slicing
+    # and unique receiver counting very quickly.
+    def __init__(self, interactions):
+        self.interaction_times = np.array(
+            [interaction[0] for interaction in interactions]
+        )
+
+        index_list = []
+        flattened_interactions = []
+        repeated_index_list = []
+        counter = 0
+        for i, interaction in enumerate(interactions):
+            index_list.append(counter)
+            flattened_interactions.extend(interaction[1])
+            repeated_index_list.extend([counter] * len(interaction[1]))
+            counter += len(interaction[1])
+
+        # Add one more to index list, in the case that a time is greater than
+        # any of the interaction times (see get_degrees).
+        index_list.append(counter)
+
+        self.index_array = np.array(index_list)
+        self.flattened_interactions = np.array(flattened_interactions)
+
+        self.created_times = {}
+        for r in np.unique(self.flattened_interactions):
+            self.created_times[r] = repeated_index_list[
+                np.argmax(flattened_interactions == r)
+            ]
+
+    def get_degrees(self, begin_time, end_time):
+        # Get degrees much quicker than a list comprehension could.
+        begin_i = np.searchsorted(self.interaction_times, begin_time, side="left")
+        end_i = np.searchsorted(self.interaction_times, end_time, side="right")
+
+        begin_ind = self.index_array[begin_i]
+        end_ind = self.index_array[end_i]
+        recs, degrees = np.unique(
+            self.flattened_interactions[begin_ind:end_ind], return_counts=True
+        )
+        return recs, degrees
+
+
 def draw_beta(interactions, tp, begin_time, alpha, theta, r):
     recs, degrees = np.unique(
         [r for interaction in interactions for r in interaction[1]], return_counts=True
@@ -238,9 +271,77 @@ def draw_beta(interactions, tp, begin_time, alpha, theta, r):
     return min(np.random.beta(a, b), 1 - 1e-8)
 
 
+def draw_beta_speedy(interactions, begin_time, end_time, alpha, theta, r):
+    recs, degrees = interactions.get_degrees(begin_time, end_time)
+
+    degree_dict = dict(zip(recs, degrees))
+
+    if r not in recs:
+        r_degrees = degrees[recs == r]
+    else:
+        r_degrees = 0
+
+    if begin_time == interactions.created_times[r]:
+        r_degrees -= 1
+
+    a = 1 - alpha + r_degrees
+    sum_ind = np.argmax(recs > r)
+    b = theta + (r + 1) * alpha + np.sum(degrees[sum_ind:])
+
+    return np.random.beta(a, b)
+
+
+def get_degree_lists(temporal_probs, interactions):
+    degree_by_time_dict = defaultdict(list)
+
+    for t, rec_list in interactions:
+        for r in rec_list:
+            degree_by_time_dict[r].append(t)
+
+    degree_arrays = {}
+    s_arrays = {}
+    for r, times in degree_by_time_dict.items():
+        change_times = temporal_probs.arrival_times_dict[r]
+        binned = np.searchsorted(change_times, times, side="right") - 1
+        time_inds, degrees = np.unique(binned, return_counts=True)
+
+        degree_array = np.zeros(len(change_times))
+        degree_array[time_inds] = degrees
+        degree_arrays[r] = degree_array
+
+        s_array = np.zeros_like(degree_array)
+
+        for rr in range(r + 1, len(degree_by_time_dict)):
+            rr_times = degree_by_time_dict[rr]
+            binned = np.searchsorted(change_times, rr_times, side="right") - 1
+            time_inds, degrees = np.unique(binned, return_counts=True)
+            try:
+                s_array[time_inds] += degrees
+            except IndexError:
+                import pdb
+
+                pdb.set_trace()
+
+        s_arrays[r] = s_array
+
+    return degree_arrays, s_arrays
+
+
+def get_receiver_inds_change_times(temporal_probs, change_times):
+    num_recs = len(temporal_probs.created_times)
+    ct_inds = np.zeros((num_recs, len(change_times)))
+
+    for r in range(num_recs):
+        r_change_times = temporal_probs.arrival_times_dict[r]
+        ct_inds[r, :] = np.searchsorted(r_change_times, change_times, side="right") - 1
+
+    return ct_inds
+
+
 def update_sticks_full_data_update(
     tp_initial, interactions, alpha, theta, iteration=None
 ):
+
     num_recs = len(set([r for t, recs in interactions for r in recs]))
     recs_initial, change_times = zip(
         *[(r, t) for (r, v) in tp_initial.arrival_times_dict.items() for t in v[1:]]
@@ -272,8 +373,9 @@ def update_sticks_full_data_update(
             np.concatenate([change_times, [interaction_times[-1] + 1]]),
         )
     ):
-        begin_ind = bisect.bisect_left(interaction_times, begin_time)
-        end_ind = bisect.bisect_right(interaction_times, end_time)
+
+        begin_ind = bisect_left(interaction_times, begin_time)
+        end_ind = bisect_right(interaction_times, end_time)
         if begin_ind == end_ind:
             continue
 
@@ -310,8 +412,7 @@ def update_sticks_full_data_update(
         # was not chosen.
 
         ct = change_times[ind]
-        num_created_recs = len(tp_initial.created_times[tp_initial.created_times < ct])
-        num_created_recs = len(tp_initial.created_times)
+        num_created_recs = len(tp_initial.stick_dict)
 
         # Get the times before and after (and during?) the switch
         # before_times, before_inds = zip(*[tp_initial.get_last_switch(r, ct, return_index=True) for r in range(num_created_recs)])
@@ -369,10 +470,10 @@ def update_sticks_full_data_update(
         if probs.any() <= 0:
             print("Iteration {} is where it fucked up".format(iteration))
 
-        # try:
-        log_probs = np.log(probs)
-        # except:
-        #    print("Iteration {} is where it fucked up".format(iteration))
+        try:
+            log_probs = np.log(probs)
+        except:
+            print("Iteration {} is where it fucked up".format(iteration))
         # Calculate likelihood of each jump
         # First step, add integrated new beta
         log_probs[:-1] += betaln(
@@ -492,19 +593,6 @@ def update_sticks_full_data_update(
 
 
 def get_created_sticks(interactions, theta, alpha):
-    """Gets created sticks of some kind.
-
-    Args:
-        interactions (list): list of dataset.
-        theta (float): Parameter for sticks.
-        alpha (float): Parameter for sticks.
-
-    Returns:
-        np.array: Initial stick for each receiver.
-    """
-
-    # TODO: Why are we instantiating with the overall degree dict? Maybe a better instantiation?
-    # Probably need to see if this affects overall outcome.
     nodes, degrees = np.unique(
         [i for interaction in interactions for i in interaction[1]], return_counts=True
     )
@@ -513,7 +601,6 @@ def get_created_sticks(interactions, theta, alpha):
     num_recs = len(nodes)
     created_sticks = np.zeros(num_recs)
 
-    # This isn't robust to nodes that aren't consecutive. Probably need a sanitizing step.
     for r in nodes:
         a = 1 - alpha + degree_dict[r]
         b = (
@@ -527,15 +614,8 @@ def get_created_sticks(interactions, theta, alpha):
 
 
 def get_created_times(interactions):
-    """What is this
-
-    Args:
-        interactions (list): list of all interactions in the dataset
-
-    Returns:
-        np.array: times that each receiver first appears in the dataset.
-    """
     created_times = []
+    counter = 0
     for interaction in interactions:
         for i in interaction[1]:
             if i == len(created_times):
@@ -587,6 +667,7 @@ def sample_alpha_hmc(
     step_size=0.01,
     scale=1,
 ):
+
     neg_log_prob = partial(
         evaluate_talpha_neg_ll,
         theta=theta,
@@ -651,6 +732,7 @@ def sample_theta_hmc(
     step_size=0.01,
     scale=1,
 ):
+
     neg_log_prob = partial(
         evaluate_ttheta_neg_ll,
         alpha=alpha,
@@ -682,6 +764,24 @@ def sample_theta_hmc(
     return theta_prime, accepted
 
 
+def rjmcmc_jump_times(temporal_probs, nu):
+
+    # Two options: delete or insert
+    tp_candidate = deepcopy(temporal_probs)
+    if np.random.rand() < 0.5:
+        # Stupid delete - just a random deletion
+        arrival_times, nodes = temporal_probs.get_arrival_times()
+        deletion_ind = np.random.choice(len(arrival_times))
+
+        tp_candidate.delete_change(nodes[deletion_ind], arrival_times[ind])
+        # calculate an acceptance probability
+
+    else:
+
+        # Insert candidate
+        pass
+
+
 def evaluate_itime_likelihood(
     interactions, r, tp, proposal_time, begin_time, end_time, nu
 ):
@@ -689,8 +789,8 @@ def evaluate_itime_likelihood(
     interaction_times = [t for (t, interaction) in interactions]
 
     # Evaluate the time from begin_time to proposal_time
-    begin_ind = bisect.bisect_left(interaction_times, begin_time)
-    proposal_ind = bisect.bisect_right(interaction_times, proposal_time)
+    begin_ind = bisect_left(interaction_times, begin_time)
+    proposal_ind = bisect_right(interaction_times, proposal_time)
 
     recs, degrees = np.unique(
         [
@@ -717,7 +817,7 @@ def evaluate_itime_likelihood(
     ll += np.sum([v for (k, v) in degree_dict.items() if k > r]) * (1 - stick)
 
     # Evaluate the proposal_time to end_time
-    end_ind = bisect.bisect_right(interaction_times, end_time)
+    end_ind = bisect_right(interaction_times, end_time)
 
     recs, degrees = np.unique(
         [
@@ -762,8 +862,8 @@ def evaluate_itime_likelihood_new(
     interaction_times = [t for (t, interaction) in interactions]
 
     # Evaluate the time from begin_time to proposal_time
-    begin_ind = bisect.bisect_left(interaction_times, begin_time)
-    proposal_ind = bisect.bisect_right(interaction_times, proposal_time)
+    begin_ind = bisect_left(interaction_times, begin_time)
+    proposal_ind = bisect_right(interaction_times, proposal_time)
 
     recs, degrees = np.unique(
         [
@@ -789,7 +889,7 @@ def evaluate_itime_likelihood_new(
     ll += np.sum([v for (k, v) in degree_dict.items() if k > r]) * (1 - before_stick)
 
     # Evaluate the proposal_time to end_time
-    end_ind = bisect.bisect_right(interaction_times, end_time)
+    end_ind = bisect_right(interaction_times, end_time)
 
     recs, degrees = np.unique(
         [
@@ -818,6 +918,9 @@ def evaluate_itime_likelihood_new(
 
 
 def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, sigma):
+
+    num_recs = len(set([r for t, recs in interactions for r in recs]))
+
     nodes, arrival_times = zip(
         *[(k, t) for (k, v) in temporal_probs.arrival_times_dict.items() for t in v[1:]]
     )
@@ -836,6 +939,7 @@ def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, si
     accepted = []
     log_acceptance_probs = []
     for i, at in enumerate(arrival_times):
+
         r = int(nodes[i])
         if r == -1:
             accepted.append(False)
@@ -914,10 +1018,10 @@ def sample_interarrival_times(temporal_probs, interactions, theta, alpha, nu, si
 
 
 def run_chain(
-    save_dir: pathlib.Path,
-    num_times: int,
-    interactions: list,
-    nu: float,
+    save_dir,
+    num_times,
+    interactions,
+    nu,
     theta_priors=(10, 10),
     alpha_priors=(1, 1),
     update_alpha=False,
@@ -927,33 +1031,10 @@ def run_chain(
     sigma_it=1,
     seed=None,
 ):
-    """_summary_
 
-    Args:
-        save_dir (Path): Path where the samples are stored.
-        num_times (int): Number of iterations. Note that the first
-            half of samples are used as burn-in.
-        interactions (list): List of interactions. Generally consists of a list
-            of lists.
-        nu (float): Rate of jump times. The expected number of jump times is related
-            to nu by X. TODO: Figure out this number. Also rename nu.
-        theta_priors (tuple, optional): Gamma parameters for theta prior. Defaults to (10, 10).
-        alpha_priors (tuple, optional): Beta parameters for alpha prior. Defaults to (1, 1).
-        update_alpha (bool, optional): Bool to perform an update on alpha. Defaults to False.
-        change_times (np.array | list, optional): Change times for the jumps in the model. If it is
-            not set, the change times are generated randomly. Defaults to None.
-        update_theta (bool, optional): Bool to perform an update on theta. Defaults to True.
-        update_interarrival_times (bool, optional): Bool to perform an update on the interarrival
-            times. Defaults to True.
-        sigma_it (int, optional): _description_. Defaults to 1. ????
-        seed (int, optional): Seed to set the random number generator. Defaults to None.
-    """
     np.random.seed(seed)
     max_time = interactions[-1][0]
 
-    # TODO: Note that nu doesn't scale to max_time, so if those are not properly calibrated, you may
-    # too many or too few change times. Should we tie these together?
-    # Get change times if they're not sent; make sure that the last change time is before the max interaction time.
     if change_times is None:
         change_times = [np.random.exponential(1 / nu)]
         while True:
@@ -970,17 +1051,10 @@ def run_chain(
     theta = np.random.gamma(*theta_priors)
 
     # initialize sticks
-
-    # created times = first time that each receiver has been seen in the dataset
     created_times = get_created_times(interactions)
-    # created sticks = sticks for the first time; uses the posterior for the sticks
-    # across the whole time.
-    created_sticks = get_created_sticks(interactions, theta, alpha)
-    # This is where the thing changed! NOTE NOTE NOTE
     created_times = np.zeros_like(created_times)
+    created_sticks = get_created_sticks(interactions, theta, alpha)
 
-    # TemporalProbabilities sticks, receivers, created_times, created_sticks, change_times
-    # Did this change?
     tp_initial = TemporalProbabilities(
         -1 * np.ones_like(change_times),
         -1 * np.ones_like(change_times),
@@ -1043,8 +1117,6 @@ def run_chain(
     return
 
 
-# TODO: Logically rearrange these, and don't require nu. Instead require either
-# change_times or nu.
 def infer_teem(
     interactions,
     nu,
@@ -1058,38 +1130,7 @@ def infer_teem(
     change_times=None,
     update_interarrival_times=True,
 ):
-    """Performs inference for the TEEM model.
-
-    Args:
-        interactions (list): List of interactions. Generally consists of a list
-            of lists.
-        nu (float): Rate of jump times. The expected number of jump times is related
-            to nu by X. TODO: Figure out this number. Also rename nu.
-        save_dir (Path | str): Path where to save the inferred samples.
-        alpha_priors (tuple, optional): Beta parameters for alpha prior. Defaults to (1, 1).
-        theta_priors (tuple, optional): Gamma parameters for theta prior. Defaults to (10, 10).
-        num_chains (int, optional): Number of parallel chains to run. Defaults to 4.
-        num_iters_per_chain (int, optional): Number of iterations per chain. Note that the first
-            half of samples are used as burn-in. Defaults to 500.
-        update_alpha (bool, optional): Bool to perform an update on alpha. Defaults to True.
-        update_theta (bool, optional): Bool to perform an update on theta. Defaults to True.
-        change_times (np.array | list, optional): Change times for the jumps in the model. If it is
-            not set, the change times are generated randomly. Defaults to None.
-        update_interarrival_times (bool, optional): Bool to perform an update on the interarrival
-            times. Defaults to True.
-    """
     print("Creating Necessary Parameters")
-
-    if not pathlib.Path(save_dir).is_dir():
-        pathlib.Path(save_dir).mkdir(parents=True)
-
-    if change_times is not None:
-        with (pathlib.Path(save_dir) / "change_times.pkl").open("wb") as outfile:
-            pickle.dump(change_times, outfile)
-
-    chain_dirs = [pathlib.Path(save_dir) / "{}".format(i) for i in range(num_chains)]
-
-    _ = [cd.mkdir(exist_ok=True) for cd in chain_dirs]
 
     rc_func = partial(
         run_chain,
@@ -1104,18 +1145,29 @@ def infer_teem(
         update_interarrival_times=update_interarrival_times,
     )
 
+    if not pathlib.Path(save_dir).is_dir():
+        pathlib.Path(save_dir).mkdir(parents=True)
+
+    with (pathlib.Path(save_dir) / "change_times.pkl").open("wb") as outfile:
+        pickle.dump(change_times, outfile)
+
+    save_dirs = [pathlib.Path(save_dir) / "{}".format(i) for i in range(num_chains)]
+
+    for sd in save_dirs:
+        if not sd.is_dir():
+            sd.mkdir(parents=True)
+
     start_time = time.time()
     print("Beginning Inference:")
+    tp_lists = []
 
     with ProcessPoolExecutor() as executor:
-        for _ in executor.map(rc_func, chain_dirs):
+        for _ in executor.map(rc_func, save_dirs):
             continue
     end_time = time.time()
 
     print("Took {} minutes.".format((end_time - start_time) / 60))
 
-
-def calculate_posterior_estimates(save_dir, num_chains, num_iters_per_chain):
     print("Calculating posterior estimates:")
     start_time = time.time()
 
@@ -1123,13 +1175,15 @@ def calculate_posterior_estimates(save_dir, num_chains, num_iters_per_chain):
         (upper_limits, lower_limits, means),
         (probs_ul, probs_ll, probs),
     ) = get_limits_and_means_different_times(save_dir, num_chains, num_iters_per_chain)
-    end_time = time.time()  # TODO: Can we parallelize this?
+    end_time = time.time()
 
     print("Took {} minutes.".format((end_time - start_time) / 60))
+
     return
 
 
 def evaluate_posterior_log_likelihood(interactions, temporal_probs, alpha, theta, nu):
+
     # Evaluate sticks
     stick_r_array, V_array = zip(
         *[(k, i) for (k, v) in temporal_probs.stick_dict.items() for i in v if k != -1]
@@ -1147,7 +1201,7 @@ def evaluate_posterior_log_likelihood(interactions, temporal_probs, alpha, theta
 
     if len(temporal_probs.arrival_times_dict[-1] > 0):
         arrival_times.append(temporal_probs.arrival_times_dict[-1][0])
-        # nodes.append(-1)
+        nodes.append(-1)
 
     arrival_times = np.array(arrival_times)
     sorted_inds = np.argsort(arrival_times)
@@ -1156,7 +1210,7 @@ def evaluate_posterior_log_likelihood(interactions, temporal_probs, alpha, theta
 
     interarrival_times = np.diff(arrival_times)
     # Interarrival times
-    ll += expon.logpdf(interarrival_times, scale=1 / nu).sum()
+    ll += st.expon.logpdf(interarrival_times, scale=1 / nu).sum()
 
     # Choice of switching receiver
     ll += sum(
@@ -1191,6 +1245,7 @@ def get_limits_and_means_different_times(
     stick_name="stick_avgs.pkl",
     prob_name="prob_avgs.pkl",
 ):
+
     times = []
 
     save_dirs = [os.path.join(gibbs_dir, "{}".format(i)) for i in range(num_chains)]
@@ -1285,6 +1340,7 @@ def get_limits_and_means(
     stick_name="stick_avgs.pkl",
     prob_name="prob_avgs.pkl",
 ):
+
     save_dirs = [os.path.join(gibbs_dir, "{}".format(i)) for i in range(num_chains)]
     tp_master_list = []
     for save_dir in save_dirs:
@@ -1368,6 +1424,7 @@ def get_limits_and_means(
 
 
 def get_posterior_alphas(gibbs_dir, num_chains, num_iters_per_chain):
+
     save_dirs = [os.path.join(gibbs_dir, "{}".format(i)) for i in range(num_chains)]
     alphas = []
     for save_dir in save_dirs:
@@ -1381,6 +1438,7 @@ def get_posterior_alphas(gibbs_dir, num_chains, num_iters_per_chain):
 
 
 def get_posterior_thetas(gibbs_dir, num_chains, num_iters_per_chain):
+
     save_dirs = [os.path.join(gibbs_dir, "{}".format(i)) for i in range(num_chains)]
     thetas = []
     for save_dir in save_dirs:
